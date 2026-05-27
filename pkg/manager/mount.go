@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"path/filepath"
 	"context"
 	"os/exec"
 	"strings"
@@ -72,6 +73,12 @@ func (m *Manager) RunFFprobe(filePaths []string) error {
 		if !utils.IsMediaFile(fp) {
 			continue
 		}
+		// Skip extensions where ffprobe always fails: playlists, DVD indexes,
+		// stream files. IsMediaFile treats them as "associated with media"
+		// (which they are for player purposes) but they contain no AV bytes.
+		if isNonProbeable(fp) {
+			continue
+		}
 		p.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), FFprobeTimeout)
 			defer cancel()
@@ -122,4 +129,25 @@ func (s *stubMountManager) IsReady() bool {
 }
 func (s *stubMountManager) Type() string {
 	return "none"
+}
+
+
+// nonProbeableExts are extensions that IsMediaFile accepts but ffprobe will
+// always reject — they contain references to media, not media itself.
+var nonProbeableExts = map[string]struct{}{
+	".m3u":  {}, // audio playlist
+	".m3u8": {}, // HLS playlist
+	".wpl":  {}, // Windows playlist
+	".asx":  {}, // ASF playlist
+	".pls":  {}, // generic playlist
+	".strm": {}, // stream URL file
+	".ifo":  {}, // DVD index
+	".bup":  {}, // DVD backup
+	".nfo":  {}, // metadata
+}
+
+func isNonProbeable(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	_, ok := nonProbeableExts[ext]
+	return ok
 }
