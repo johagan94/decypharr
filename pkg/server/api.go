@@ -983,14 +983,30 @@ func (s *Server) handleMountHealth(w http.ResponseWriter, r *http.Request) {
 		stats = mm.Stats()
 	}
 
+	// Promote circuit_breakers_open count to top level so Warden and other
+	// external tools can detect degraded-but-not-dead state without having
+	// to navigate the nested stats map.
+	var circuitBreakersOpen int64
+	if v, ok := stats["cache_circuit_breakers"]; ok {
+		if n, ok := v.(int64); ok {
+			circuitBreakersOpen = n
+		}
+	}
+	degraded := ready && circuitBreakersOpen > 0
+
 	cfg := config.Get()
 	resp := map[string]interface{}{
-		"ready":      ready,
-		"type":       cfg.Mount.Type,
-		"mount_path": cfg.Mount.MountPath,
-		"stats":      stats,
+		"ready":                ready,
+		"degraded":             degraded,
+		"circuit_breakers_open": circuitBreakersOpen,
+		"type":                 cfg.Mount.Type,
+		"mount_path":           cfg.Mount.MountPath,
+		"stats":                stats,
 	}
 
+	// Return 503 when mount is fully down, 200 when healthy or degraded.
+	// Degraded (some circuit breakers open) still returns 200 — callers can
+	// inspect the degraded field to take softer action.
 	status := http.StatusOK
 	if !ready {
 		status = http.StatusServiceUnavailable
