@@ -74,12 +74,34 @@ func (s *SABnzbd) modeContext(next http.Handler) http.Handler {
 			category = r.Form.Get("cat")
 		}
 
-		// Create a default Arr instance for the category
-		downloadUncached := false
-		a := arr.New(category, "", "", false, false, &downloadUncached, "", "auto")
-
 		ctx := context.WithValue(r.Context(), modeKey, strings.TrimSpace(mode))
-		ctx = context.WithValue(ctx, arrKey, a)
+		// SABnzbd uses cat= for category (NOT category=, which categoryContext
+		// reads). That means by the time we land here, authContext has seeded
+		// a stub (empty-name) arr based on an empty category — so we need to
+		// upgrade it to the real one whenever storage knows about cat= value.
+		var real *arr.Arr
+		if category != "" {
+			real = s.manager.Arr().Get(category)
+		}
+		if real != nil {
+			ctx = context.WithValue(ctx, arrKey, real)
+		} else if getArrFromContext(ctx) == nil {
+			// No real arr in storage AND nothing in ctx — fall back to a stub
+			// that still inherits per-arr config (ForceDownload, etc.) so the
+			// downstream NZB handler at least has the right flags set.
+			var downloadUncached *bool
+			var forceDownload bool
+			for _, cfgArr := range config.Get().Arrs {
+				if cfgArr.Name == category {
+					downloadUncached = cfgArr.DownloadUncached
+					forceDownload = cfgArr.ForceDownload
+					break
+				}
+			}
+			a := arr.New(category, "", "", false, false, downloadUncached, "", "auto")
+			a.ForceDownload = forceDownload
+			ctx = context.WithValue(ctx, arrKey, a)
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

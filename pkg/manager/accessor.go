@@ -64,3 +64,18 @@ func (m *Manager) Usenet() *usenet.Usenet {
 func (m *Manager) GetDebridSpeedTestResult(provider string) (debridTypes.SpeedTestResult, bool) {
 	return m.debridSpeedTestResults.Load(provider)
 }
+
+// mountAdapter implements warden.MountChecker by delegating to the manager's
+// MountManager. Returns false (not ready) when no mount manager is set,
+// which is the conservative answer — Warden defers destructive actions.
+type mountAdapter struct {
+	m *Manager
+}
+
+func (a mountAdapter) IsReady() bool {
+	mm := a.m.MountManager()
+	if mm == nil {
+		return false
+	}
+	return mm.IsReady()
+}

@@ -146,7 +146,7 @@ func (a *Arr) Validate() error {
 	if utils.ValidateURL(a.Host) != nil {
 		return fmt.Errorf("invalid arr host URL")
 	}
-	resp, err := a.Request("GET", "/api/v3/health", nil, nil)
+	resp, err := a.Request("GET", "/"+a.APIBase()+"/health", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -329,7 +329,7 @@ func (a *Arr) Refresh() error {
 		Name: "RefreshMonitoredDownloads",
 	}
 
-	resp, err := a.Request(http.MethodPost, "api/v3/command", payload, nil)
+	resp, err := a.Request(http.MethodPost, a.APIBase()+"/command", payload, nil)
 	if err != nil {
 		return err
 	}
@@ -354,5 +354,18 @@ func inferType(host, name string) Type {
 		return Readarr
 	default:
 		return Others
+	}
+}
+
+// APIBase returns the *arr REST API base path for this instance.
+// Sonarr/Radarr use /api/v3, Lidarr/Readarr use /api/v1. Without this
+// indirection every helper that hardcoded "api/v3" silently fails for
+// Lidarr (the response body is the HTML 404 page, which json.Decode rejects).
+func (a *Arr) APIBase() string {
+	switch a.Type {
+	case Lidarr, Readarr:
+		return "api/v1"
+	default:
+		return "api/v3"
 	}
 }

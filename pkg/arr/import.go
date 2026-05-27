@@ -156,7 +156,7 @@ type ManualImportRequestSchema struct {
 func (a *Arr) Import(downloadID string) (io.ReadCloser, error) {
 	query := gourl.Values{}
 	query.Add("downloadId", downloadID)
-	url := "api/v3/manualimport" + "?" + query.Encode()
+	url := a.APIBase() + "/manualimport" + "?" + query.Encode()
 	var data []ImportResponseSchema
 	_, err := a.Request(http.MethodGet, url, nil, &data)
 	if err != nil {
@@ -193,7 +193,7 @@ func (a *Arr) Import(downloadID string) (io.ReadCloser, error) {
 		ImportMode: "copy",
 	}
 
-	url = "api/v3/command"
+	url = a.APIBase() + "/command"
 	resp, err := a.Request(http.MethodPost, url, request, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import: %w", err)

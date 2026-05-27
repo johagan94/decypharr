@@ -72,7 +72,7 @@ func (a *Arr) GetHistory(downloadId, eventType string) *HistorySchema {
 	}
 	query.Add("eventType", eventType)
 	query.Add("pageSize", "100")
-	url := "api/v3/history" + "?" + query.Encode()
+	url := a.APIBase() + "/history" + "?" + query.Encode()
 	var data *HistorySchema
 	resp, err := a.Request(http.MethodGet, url, nil, &data)
 	if err != nil {
@@ -91,7 +91,7 @@ func (a *Arr) GetQueue() []QueueSchema {
 	results := make([]QueueSchema, 0)
 
 	for {
-		url := "api/v3/queue" + "?" + query.Encode()
+		url := a.APIBase() + "/queue" + "?" + query.Encode()
 		var data QueueResponseScheme
 		resp, err := a.Request(http.MethodGet, url, nil, &data)
 		if err != nil {
@@ -205,7 +205,7 @@ func (a *Arr) FindGrabHistoryID(mediaDBID int) (int, string, error) {
 	}
 
 	var data HistorySchema
-	url := "api/v3/history?" + query.Encode()
+	url := a.APIBase() + "/history?" + query.Encode()
 	resp, err := a.Request(http.MethodGet, url, nil, &data)
 	if err != nil {
 		return 0, "", err
@@ -230,7 +230,7 @@ func (a *Arr) MarkHistoryFailed(historyID int) error {
 	if historyID <= 0 {
 		return nil
 	}
-	url := fmt.Sprintf("api/v3/history/failed/%d", historyID)
+	url := fmt.Sprintf("%s/history/failed/%d", a.APIBase(), historyID)
 	resp, err := a.Request(http.MethodPost, url, nil, nil)
 	if err != nil {
 		return err
@@ -256,7 +256,7 @@ func (a *Arr) BlackListAndResearchItems(items map[int]bool) error {
 	query.Add("blocklist", "true")
 	query.Add("skipRedownload", "false")
 	query.Add("changeCategory", "false")
-	url := "api/v3/queue/bulk" + "?" + query.Encode()
+	url := a.APIBase() + "/queue/bulk" + "?" + query.Encode()
 
 	_, err := a.Request(http.MethodDelete, url, payload, nil)
 	if err != nil {

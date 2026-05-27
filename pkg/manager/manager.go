@@ -25,6 +25,7 @@ import (
 	"github.com/sirrobot01/decypharr/pkg/storage"
 	"github.com/sirrobot01/decypharr/pkg/usenet"
 	"github.com/sirrobot01/decypharr/pkg/version"
+	"github.com/sirrobot01/decypharr/pkg/warden"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -395,6 +396,14 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.readyOnce.Do(func() {
 		close(m.ready)
 	})
+
+	// Start Warden (queue-hygiene goroutines). Safe to launch before
+	// mount manager — Warden polls mountManager.IsReady() and waits for it.
+	cfg := config.Get()
+	if cfg.Warden.Enabled {
+		w := warden.New(m.arr, mountAdapter{m: m}, warden.FromConfig(cfg.Warden))
+		w.Start(ctx)
+	}
 
 	// Start the mount manager if set
 	// This also start thr mounting process

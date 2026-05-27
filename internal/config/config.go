@@ -127,6 +127,21 @@ func (r RepairConfig) IsZero() bool {
 		!r.AutoRepair && !r.NotifyOnComplete
 }
 
+// Warden controls the queue-hygiene goroutines (startup reconciliation +
+// Defence loop). Disabled by default; opt-in by setting enabled=true.
+type Warden struct {
+	Enabled            bool              `json:"enabled,omitempty"`
+	DryRun             bool              `json:"dry_run,omitempty"`
+	StartupReconcile   bool              `json:"startup_reconcile,omitempty"`
+	DefenceEnabled     bool              `json:"defence_enabled,omitempty"`
+	DefenceInterval    string            `json:"defence_interval,omitempty"` // duration string, default "30m"
+	BatchSize          int               `json:"batch_size,omitempty"`       // max removals per cycle, default 10
+	StaggerSeconds     int               `json:"stagger_seconds,omitempty"`
+	SearchAfterCleanup bool              `json:"search_after_cleanup,omitempty"`
+	Actions            map[string]string `json:"actions,omitempty"` // category -> action override
+	ReadyTimeout       string            `json:"ready_timeout,omitempty"`
+}
+
 type Config struct {
 	// server
 	BindAddress string `json:"bind_address,omitempty"`
@@ -180,6 +195,8 @@ type Config struct {
 	SkipAutoMove bool   `json:"skip_auto_move,omitempty"`
 
 	Repair RepairConfig `json:"repair,omitzero"`
+
+	Warden Warden `json:"warden,omitzero"`
 }
 
 func (c *Config) JsonFile() string {

@@ -293,6 +293,9 @@ func (s *SABnzbd) handleAddURL(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("action") != "" {
 		action = config.DownloadAction(r.URL.Query().Get("action"))
 	}
+	if _arr.ForceDownload {
+		action = config.DownloadActionDownload
+	}
 
 	if urls == "" {
 		s.writeError(w, "URL is required", http.StatusBadRequest)
@@ -370,6 +373,9 @@ func (s *SABnzbd) handleAddFile(w http.ResponseWriter, r *http.Request) {
 	action := cfg.DefaultDownloadAction
 	if r.URL.Query().Get("action") != "" {
 		action = config.DownloadAction(r.URL.Query().Get("action"))
+	}
+	if _arr.ForceDownload {
+		action = config.DownloadActionDownload
 	}
 
 	var nzoIDs []string

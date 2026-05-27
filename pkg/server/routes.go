@@ -31,6 +31,11 @@ func (s *Server) WebRoutes() http.Handler {
 	r.Get("/setup", s.SetupHandler)
 	r.Post("/api/setup/complete", s.setupCompleteHandler)
 
+	// Stream endpoint - public so Jellyfin / VLC / ffmpeg can hit it from
+	// .strm files. The path itself is the only identifier; the debrid URL
+	// it redirects to is a short-lived signed URL issued per-request.
+	r.Get("/stream/{torrent}/{file}", s.handleStream)
+
 	// Protected routes - require auth
 	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware)
@@ -89,6 +94,11 @@ func (s *Server) WebRoutes() http.Handler {
 			// Mount health — polled by external watchdogs (e.g. Warden) to detect
 			// mount-down events and pause library scans before they wipe content.
 			r.Get("/health/mount", s.handleMountHealth)
+
+			// .strm generation — walks a directory and writes .strm files
+			// pointing at /stream/{torrent}/{file}. Lets Jellyfin play through
+			// Decypharr without a FUSE mount on the Jellyfin side.
+			r.Post("/strm/generate", s.handleSTRMGenerate)
 
 			// Config/Auth
 			r.Get("/config", s.handleGetConfig)

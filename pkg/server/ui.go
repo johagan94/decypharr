@@ -1,13 +1,31 @@
 package server
 
 import (
+	"errors"
 	"net/http"
+	"strings"
+	"syscall"
 
 	json "github.com/bytedance/sonic"
 
 	"github.com/sirrobot01/decypharr/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// isClientDisconnect returns true when an error came from the client closing
+// the connection (broken pipe, connection reset). Healthcheck tools like
+// `wget --spider` close after reading headers, so every index render emits
+// a write error — this lets us log those at debug instead of warn.
+func isClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
+}
 
 func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
@@ -23,7 +41,11 @@ func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		err := s.templates.ExecuteTemplate(w, "layout", data)
 		if err != nil {
-			s.logger.Warn().Err(err).Msg("error rendering /login template")
+			if isClientDisconnect(err) {
+				s.logger.Debug().Err(err).Msg("error rendering /login template (client disconnected)")
+			} else {
+				s.logger.Warn().Err(err).Msg("error rendering /login template")
+			}
 		}
 		return
 	}
@@ -76,7 +98,11 @@ func (s *Server) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		err := s.templates.ExecuteTemplate(w, "layout", data)
 		if err != nil {
-			s.logger.Warn().Err(err).Msg("error rendering /register template")
+			if isClientDisconnect(err) {
+				s.logger.Debug().Err(err).Msg("error rendering /register template (client disconnected)")
+			} else {
+				s.logger.Warn().Err(err).Msg("error rendering /register template")
+			}
 		}
 		return
 	}
@@ -128,7 +154,11 @@ func (s *Server) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.templates.ExecuteTemplate(w, "layout", data)
 	if err != nil {
+		if isClientDisconnect(err) {
+		s.logger.Debug().Err(err).Msg("error rendering /index template (client disconnected)")
+		} else {
 		s.logger.Warn().Err(err).Msg("error rendering /index template")
+		}
 	}
 }
 
@@ -150,7 +180,11 @@ func (s *Server) DownloadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.templates.ExecuteTemplate(w, "layout", data)
 	if err != nil {
+		if isClientDisconnect(err) {
+		s.logger.Debug().Err(err).Msg("error rendering /download template (client disconnected)")
+		} else {
 		s.logger.Warn().Err(err).Msg("error rendering /download template")
+		}
 	}
 }
 
@@ -164,7 +198,11 @@ func (s *Server) RepairHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.templates.ExecuteTemplate(w, "layout", data)
 	if err != nil {
+		if isClientDisconnect(err) {
+		s.logger.Debug().Err(err).Msg("error rendering /repair template (client disconnected)")
+		} else {
 		s.logger.Warn().Err(err).Msg("error rendering /repair template")
+		}
 	}
 }
 
