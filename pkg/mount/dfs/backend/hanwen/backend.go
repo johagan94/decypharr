@@ -73,8 +73,6 @@ func (b *Backend) Mount(ctx context.Context) error {
 	}
 
 	_ = os.MkdirAll(b.config.MountPath, 0755)
-	// Try to unmount if already mounted
-	b.forceUnmount(ctx)
 
 	mountOpt := fuse.MountOptions{
 		FsName:               "decypharr",
@@ -83,23 +81,18 @@ func (b *Backend) Mount(ctx context.Context) error {
 		DisableXAttrs:        true,
 		IgnoreSecurityLabels: true,
 		MaxWrite:             1024 * 1024,
-		AllowOther: true,
+		AllowOther:           true,
 	}
 
 	var opt []string
-
 	opt = append(opt, "default_permissions")
-
 	if runtime.GOOS == "darwin" {
 		opt = append(opt, "volname=decypharr")
 		opt = append(opt, "noapplexattr")
 		opt = append(opt, "noappledouble")
 	}
-
 	mountOpt.Options = opt
 
-	// Configure FUSE options
-	// Use short entry timeout (1s) to ensure new files appear quickly
 	entryTimeout := EntryTimeout
 	attrTimeout := AttrTimeout
 	opts := &fs.Options{
@@ -110,57 +103,90 @@ func (b *Backend) Mount(ctx context.Context) error {
 		GID:          b.config.GID,
 	}
 
-	// Start timer before creating NodeFS - adjust timeout duration as needed
-	mountCtx, cancel := context.WithTimeout(ctx, b.config.DaemonTimeout)
-	defer cancel()
-
-	// Channel to receive the result of fs.Mount
+	// Retry loop: zombie FUSE mounts from OOM crashes can block a single
+	// forceUnmount attempt. Retry up to 3 times with exponential backoff
+	// (2 s, 4 s) so the process never starts silently without a DFS mount.
 	type fsResult struct {
 		server *fuse.Server
 		err    error
 	}
-	fsResultChan := make(chan fsResult, 1)
-
-	// Run fs.Mount in a goroutine
-	go func() {
-		server, err := fs.Mount(b.config.MountPath, b.root, opts)
-		fsResultChan <- fsResult{server: server, err: err}
-	}()
-
-	var server *fuse.Server
-	select {
-	case result := <-fsResultChan:
-		server = result.server
-		if result.err != nil {
-			return fmt.Errorf("failed to create mount: %w", result.err)
+	const maxMountAttempts = 3
+	var (
+		server  *fuse.Server
+		lastErr error
+	)
+	for attempt := 1; attempt <= maxMountAttempts; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			b.logger.Warn().
+				Int("attempt", attempt).
+				Dur("backoff", backoff).
+				Err(lastErr).
+				Msg("Mount failed, retrying after backoff")
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return fmt.Errorf("context canceled before mount retry: %w", ctx.Err())
+			}
 		}
-	case <-mountCtx.Done():
+		b.forceUnmount(ctx)
+
+		mountCtx, cancel := context.WithTimeout(ctx, b.config.DaemonTimeout)
+		fsResultChan := make(chan fsResult, 1)
+		go func() {
+			s, err := fs.Mount(b.config.MountPath, b.root, opts)
+			fsResultChan <- fsResult{server: s, err: err}
+		}()
+
+		var mountResult fsResult
+		select {
+		case mountResult = <-fsResultChan:
+		case <-mountCtx.Done():
+			cancel()
+			lastErr = fmt.Errorf("attempt %d: timeout creating mount: %w", attempt, mountCtx.Err())
+			continue
+		}
+		if mountResult.err != nil {
+			cancel()
+			lastErr = fmt.Errorf("attempt %d: failed to create mount: %w", attempt, mountResult.err)
+			continue
+		}
+
+		b.logger.Info().
+			Str("mount_path", b.config.MountPath).
+			Int("attempt", attempt).
+			Msg("Waiting for mount to be ready")
+
+		waitChan := make(chan error, 1)
+		go func() { waitChan <- mountResult.server.WaitMount() }()
+		select {
+		case err := <-waitChan:
+			if err != nil {
+				_ = mountResult.server.Unmount()
+				cancel()
+				lastErr = fmt.Errorf("attempt %d: failed to wait for mount: %w", attempt, err)
+				continue
+			}
+		case <-mountCtx.Done():
+			_ = mountResult.server.Unmount()
+			cancel()
+			lastErr = fmt.Errorf("attempt %d: timeout waiting for mount: %w", attempt, mountCtx.Err())
+			continue
+		}
+		cancel()
+		server = mountResult.server
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
 		b.ready.Store(false)
-		return fmt.Errorf("timeout creating mount: %w", mountCtx.Err())
+		b.logger.Error().Err(lastErr).
+			Int("attempts", maxMountAttempts).
+			Str("mount_path", b.config.MountPath).
+			Msg("DFS failed to mount after all retries — streaming will not work")
+		return lastErr
 	}
-
 	b.server = server
-
-	// Now wait for the mount to be ready with the same timeout context
-	b.logger.Info().
-		Str("mount_path", b.config.MountPath).
-		Msg("Waiting for mount to be ready")
-
-	waitChan := make(chan error, 1)
-	go func() {
-		waitChan <- server.WaitMount()
-	}()
-
-	select {
-	case err := <-waitChan:
-		if err != nil {
-			_ = server.Unmount() // cleanup on error
-			return fmt.Errorf("failed to wait for mount: %w", err)
-		}
-	case <-mountCtx.Done():
-		_ = server.Unmount() // cleanup on timeout
-		return fmt.Errorf("timeout waiting for mount to be ready: %w", mountCtx.Err())
-	}
 
 	umount := func(ctx context.Context) {
 		b.logger.Info().Msg("Unmounting filesystem")
