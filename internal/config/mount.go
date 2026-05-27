@@ -59,7 +59,8 @@ type DFS struct {
 	ChunkSize     string `json:"chunk_size,omitempty"`      // Initial chunk size, e.g 10MB
 	ReadAheadSize string `json:"read_ahead_size,omitempty"` // Read ahead size (deprecated, use MaxChunkSize)
 
-	DaemonTimeout string `json:"daemon_timeout,omitempty"` // Time after which the FUSE daemon will exit if idle
+	DaemonTimeout   string `json:"daemon_timeout,omitempty"`    // Time after which the FUSE daemon will exit if idle
+	CircuitCooldown string `json:"circuit_cooldown,omitempty"`  // How long a file's circuit breaker stays open after max errors (default 20m)
 
 	// File system settings
 	UID                uint32 `json:"uid,omitempty"`                 // User ID for mounted files

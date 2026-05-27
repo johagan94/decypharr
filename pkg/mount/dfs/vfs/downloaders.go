@@ -31,8 +31,8 @@ const (
 	activeWaiterKickerInterval = 1 * time.Second
 	// idleTimeout is how long before stopping all downloaders due to inactivity
 	idleTimeout = 30 * time.Second
-	// circuitCooldownDuration is how long to block requests after max errors reached
-	circuitCooldownDuration = 20 * time.Minute
+	// defaultCircuitCooldownDuration is the fallback when no config value is provided.
+	defaultCircuitCooldownDuration = 20 * time.Minute
 	// noProgressTimeout is the max time a stream attempt may run without any bytes written.
 	noProgressTimeout = 45 * time.Second
 	// noProgressCheckInterval is how often stall detection checks for forward progress.
@@ -80,8 +80,9 @@ type Downloaders struct {
 	kickerDone   chan struct{} // Signals kicker goroutine has exited; a fresh channel per session
 
 	// Circuit breaker - blocks all requests when max errors reached
-	circuitOpen   atomic.Bool  // True when circuit is "open" (blocking all requests)
-	circuitOpenAt atomic.Int64 // Unix nano timestamp when circuit opened
+	circuitCooldown time.Duration // how long circuit stays open (from config)
+	circuitOpen     atomic.Bool   // True when circuit is "open" (blocking all requests)
+	circuitOpenAt   atomic.Int64  // Unix nano timestamp when circuit opened
 }
 
 // ensureStreamTracked makes sure the active stream is registered when reads begin.
@@ -211,15 +212,20 @@ func NewDownloaders(ctx context.Context, mgr *manager.Manager, item *CacheItem, 
 		retries = 3
 	}
 
+	cooldown := cfg.CircuitCooldownDuration
+	if cooldown <= 0 {
+		cooldown = defaultCircuitCooldownDuration
+	}
 	dls := &Downloaders{
-		parentCtx:     parentCtx,
-		ctx:           ctx,
-		cancel:        cancel,
-		item:          item,
-		manager:       mgr,
-		chunkSize:     chunkSize,
-		readAheadSize: readAheadSize,
-		retries:       retries,
+		parentCtx:       parentCtx,
+		ctx:             ctx,
+		cancel:          cancel,
+		item:            item,
+		manager:         mgr,
+		chunkSize:       chunkSize,
+		readAheadSize:   readAheadSize,
+		retries:         retries,
+		circuitCooldown: cooldown,
 		// streamID is populated lazily when the first read occurs.
 		streamID: "",
 	}
@@ -636,11 +642,11 @@ func (dls *Downloaders) isCircuitOpen() bool {
 	if openedAt == 0 {
 		return false
 	}
-	if time.Now().UnixNano()-openedAt >= int64(circuitCooldownDuration) {
+	if time.Now().UnixNano()-openedAt >= int64(dls.circuitCooldown) {
 		// Cooldown expired - reset circuit and clear error budget
 		dls.mu.Lock()
 		openedAt = dls.circuitOpenAt.Load()
-		if openedAt != 0 && time.Now().UnixNano()-openedAt >= int64(circuitCooldownDuration) {
+		if openedAt != 0 && time.Now().UnixNano()-openedAt >= int64(dls.circuitCooldown) {
 			dls.circuitOpen.Store(false)
 			dls.circuitOpenAt.Store(0)
 			dls.errorCount = 0

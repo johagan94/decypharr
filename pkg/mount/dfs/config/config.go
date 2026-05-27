@@ -28,6 +28,9 @@ type FuseConfig struct {
 
 	Retries int
 
+	// Circuit breaker settings
+	CircuitCooldownDuration time.Duration
+
 	// File system settings
 	UID                uint32
 	GID                uint32
@@ -44,7 +47,8 @@ func DefaultFuseConfig() *FuseConfig {
 		ChunkSize:            4 * 1024 * 1024,  // 4MB chunk size (balance latency vs throughput)
 		ReadAheadSize:        16 * 1024 * 1024, // 16MB read-ahead (4 chunks prefetch)
 
-		Retries: 3,
+		Retries:                 3,
+		CircuitCooldownDuration: 20 * time.Minute, // matches historical hardcoded default
 
 		// File system defaults
 		UID:                1000,
@@ -120,6 +124,13 @@ func ParseFuseConfig() *FuseConfig {
 
 	// retry settings
 	fuseConfig.Retries = mainCfg.Retries
+
+	// circuit breaker cooldown
+	if cfg.CircuitCooldown != "" {
+		if d, err := utils.ParseDuration(cfg.CircuitCooldown); err == nil {
+			fuseConfig.CircuitCooldownDuration = d
+		}
+	}
 
 	return fuseConfig
 }
