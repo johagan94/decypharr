@@ -169,11 +169,19 @@ func (m *Manager) detectTorrentChanges(provider string, remoteTorrentsByHash map
 		return nil, nil, nil, err
 	}
 
-	// Check for brand new torrents (not in cache at all)
+	// Check for brand new torrents (not in cache at all).
+	// Skip hashes in the deletion tombstone — debrid propagation lag means a
+	// just-deleted torrent may still appear on the next refresh (issue #236).
 	for infohash, t := range remoteTorrentsByHash {
-		if !cachedInfoHashes[infohash] {
-			newTorrents = append(newTorrents, t)
+		if cachedInfoHashes[infohash] {
+			continue
 		}
+		if m.isRecentlyDeleted(infohash) {
+			m.logger.Debug().Str("infohash", infohash).Str("name", t.Name).
+				Msg("Skipping re-add of recently deleted torrent (tombstone active)")
+			continue
+		}
+		newTorrents = append(newTorrents, t)
 	}
 
 	return newTorrents, torrentsToUpdate, torrentsToDelete, nil

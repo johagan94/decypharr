@@ -43,7 +43,9 @@ func (c *CallbackNotifier) Name() string {
 	return "callback"
 }
 
-// Send dispatches the notification via HTTP POST
+// Send dispatches the notification via HTTP POST with up to 3 retries and
+// exponential backoff so transient endpoint hiccups (e.g. Jellyfin briefly
+// unavailable while ffprobe is in flight) do not cause silent notification loss.
 func (c *CallbackNotifier) Send(event Event) error {
 	if c.callbackURL == "" {
 		return nil
@@ -75,23 +77,33 @@ func (c *CallbackNotifier) Send(event Event) error {
 		return fmt.Errorf("failed to marshal callback payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.callbackURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create callback request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	const maxAttempts = 3
+	backoff := 2 * time.Second
+	var lastErr error
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send callback request: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequest(http.MethodPost, c.callbackURL, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("failed to create callback request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	// We don't fail on non-2xx responses for callbacks - just log the issue
-	// The caller will handle logging
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("callback returned non-2xx status: %s", resp.Status)
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d: failed to send callback: %w", attempt, err)
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+		lastErr = fmt.Errorf("attempt %d: callback returned non-2xx status: %s", attempt, resp.Status)
+		time.Sleep(backoff)
+		backoff *= 2
 	}
 
-	return nil
+	return lastErr
 }

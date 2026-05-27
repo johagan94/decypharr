@@ -562,6 +562,87 @@ func (c *Connection) Stat(messageID string) (articleNumber int, echoedID string,
 	return articleNumber, echoedID, nil
 }
 
+// BodyResult holds the decoded payload and any error for a single segment
+// returned from PipelinedBody.
+type BodyResult struct {
+	MessageID string
+	Data      []byte
+	Error     error
+}
+
+// PipelinedBody sends a batch of BODY commands in a single network round-trip
+// (all commands are written before any response is read) and returns the
+// decoded yEnc bodies in the same order as messageIDs.
+//
+// RTT overhead is paid once for the whole batch rather than once per segment,
+// which dramatically improves throughput on high-latency connections.
+// Individual segment failures (430 not found, 423 bad article) are recorded in
+// BodyResult.Error and do not abort the rest of the batch. A connection-level
+// error returns a non-nil error and marks all remaining segments as failed.
+func (c *Connection) PipelinedBody(messageIDs []string) ([]BodyResult, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+
+	results := make([]BodyResult, len(messageIDs))
+	for i, id := range messageIDs {
+		results[i].MessageID = id
+	}
+
+	// Phase 1: Write all BODY commands without flushing between them,
+	// then flush once. This is the core of NNTP pipelining.
+	for _, msgID := range messageIDs {
+		formatted := FormatMessageID(msgID)
+		if _, err := fmt.Fprintf(c.writer, "BODY %s\r\n", formatted); err != nil {
+			return nil, NewConnectionError(fmt.Errorf("pipeline write failed: %w", err))
+		}
+	}
+	if err := c.writer.Flush(); err != nil {
+		return nil, NewConnectionError(fmt.Errorf("pipeline flush failed: %w", err))
+	}
+
+	// Phase 2: Read responses in order. NNTP guarantees responses arrive in the
+	// same order as commands were sent. Each successful response is followed by
+	// a dot-terminated body that must be fully consumed before reading the next.
+	for i, msgID := range messageIDs {
+		resp, err := c.readResponse()
+		if err != nil {
+			// Connection lost: mark this and all remaining segments as failed.
+			connErr := NewConnectionError(fmt.Errorf("pipeline read failed at %d/%d (%s): %w",
+				i+1, len(messageIDs), msgID, err))
+			for j := i; j < len(messageIDs); j++ {
+				results[j].Error = connErr
+			}
+			return results, connErr
+		}
+
+		if resp.Code != 222 {
+			// Segment not found or other per-article error — record and continue.
+			results[i].Error = classifyNNTPError(resp.Code,
+				fmt.Sprintf("segment %s: %s", msgID, resp.Message))
+			continue
+		}
+
+		// Read and yEnc-decode the body for this segment.
+		_ = c.conn.SetReadDeadline(utils.Now().Add(timeouts.StreamBodyTimeout))
+		dec := nntpyenc.AcquireDecoder(c.reader)
+		var buf bytes.Buffer
+		_, decErr := io.Copy(&buf, dec)
+		nntpyenc.ReleaseDecoder(dec)
+		_ = c.conn.SetReadDeadline(time.Time{})
+
+		if decErr != nil {
+			// Decode error on this segment — the connection is still positioned at
+			// the next response, so we can continue draining the pipeline.
+			results[i].Error = fmt.Errorf("yenc decode failed for %s: %w", msgID, decErr)
+			continue
+		}
+		results[i].Data = buf.Bytes()
+	}
+
+	return results, nil
+}
+
 // PipelinedStat sends multiple STAT commands in a pipeline and reads all responses.
 // This is much more efficient than individual Stat calls as it reduces round-trip latency.
 // Returns per-segment results so caller can identify exactly which segments are missing.

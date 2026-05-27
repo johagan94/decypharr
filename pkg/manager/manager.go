@@ -81,6 +81,15 @@ type Manager struct {
 	// re-fires before the previous pass has updated the queue row.
 	processingEntries *xsync.Map[string, struct{}]
 
+	// submitInFlight gates concurrent duplicate magnet submissions (same InfoHash)
+	// so a retrying arr cannot trigger multiple debrid API calls for the same torrent.
+	submitInFlight *xsync.Map[string, struct{}]
+
+	// recentlyDeleted is a short-lived tombstone (InfoHash -> deletion time).
+	// Prevents the next refresh cycle from re-adding a torrent just deleted from
+	// debrid before propagation completes (RealDebrid issue #236).
+	recentlyDeleted *xsync.Map[string, time.Time]
+
 	// NZB processing worker pool (unbounded queue)
 	nzbQueue      *nzbJobQueue
 	nzbWorkerStop chan struct{} // Signal to stop workers
@@ -153,6 +162,8 @@ func New() *Manager {
 		debridSpeedTestResults: xsync.NewMap[string, debridTypes.SpeedTestResult](),
 		activeStreams:          xsync.NewMap[string, *ActiveStream](),
 		processingEntries:      xsync.NewMap[string, struct{}](),
+		submitInFlight:         xsync.NewMap[string, struct{}](),
+		recentlyDeleted:        xsync.NewMap[string, time.Time](),
 	}
 
 	instance.init()
@@ -583,9 +594,35 @@ func (m *Manager) DeleteEntry(infohash string, removePlacements bool) error {
 	if err := m.storage.Delete(infohash); err != nil {
 		return err
 	}
+	// Tombstone the hash so the next refresh cycle does not re-add it before
+	// the debrid provider propagates the delete (issue #236).
+	m.markHashDeleted(infohash)
 	// Refresh entry cache
 	m.RefreshEntries(true)
 	return nil
+}
+
+// markHashDeleted records an infohash in the short-lived tombstone set.
+// The tombstone suppresses re-creation during the next refresh cycle for
+// providers (e.g. RealDebrid) whose delete propagation lags behind the
+// next polling window (issue #236).
+func (m *Manager) markHashDeleted(infohash string) {
+	m.recentlyDeleted.Store(infohash, time.Now())
+}
+
+// isRecentlyDeleted returns true if the hash was deleted within the last 5
+// minutes and cleans up the tombstone once it has expired.
+func (m *Manager) isRecentlyDeleted(infohash string) bool {
+	const tombstoneTTL = 5 * time.Minute
+	deleted, ok := m.recentlyDeleted.Load(infohash)
+	if !ok {
+		return false
+	}
+	if time.Since(deleted) > tombstoneTTL {
+		m.recentlyDeleted.Delete(infohash)
+		return false
+	}
+	return true
 }
 
 func (m *Manager) DeleteTorrents(infohashes []string, removeFromDebrid bool) error {

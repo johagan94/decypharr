@@ -23,10 +23,15 @@ func (q *QBit) addMagnet(ctx context.Context, url string, arr *arr.Arr, debrid s
 
 	importReq := manager.NewTorrentRequest(debrid, q.downloadFolder, magnet, arr, action, arr.DownloadUncached, callbackURL, manager.ImportTypeQBit, skipMultiSeason)
 
-	err = q.manager.AddNewTorrent(ctx, importReq)
-	if err != nil {
-		return fmt.Errorf("failed to process torrent: %w", err)
-	}
+	// Fire and forget: the arr gets an immediate 200 OK without waiting for the
+	// debrid API. Status is polled separately via /api/v2/torrents/info.
+	// Duplicate submissions for the same hash are deduplicated inside AddNewTorrent
+	// via the submitInFlight gate (issue #302, #308).
+	go func() {
+		if err := q.manager.AddNewTorrent(context.Background(), importReq); err != nil {
+			q.logger.Warn().Err(err).Str("hash", importReq.Magnet.InfoHash).Msg("Async magnet add failed")
+		}
+	}()
 	return nil
 }
 
@@ -39,10 +44,11 @@ func (q *QBit) addTorrent(ctx context.Context, fileHeader *multipart.FileHeader,
 		return fmt.Errorf("error reading file: %s \n %w", fileHeader.Filename, err)
 	}
 	importReq := manager.NewTorrentRequest(debrid, q.downloadFolder, magnet, arr, action, arr.DownloadUncached, callbackURL, manager.ImportTypeQBit, skipMultiSeason)
-	err = q.manager.AddNewTorrent(ctx, importReq)
-	if err != nil {
-		return fmt.Errorf("failed to process torrent: %w", err)
-	}
+	go func() {
+		if err := q.manager.AddNewTorrent(context.Background(), importReq); err != nil {
+			q.logger.Warn().Err(err).Str("hash", importReq.Magnet.InfoHash).Msg("Async torrent add failed")
+		}
+	}()
 	return nil
 }
 

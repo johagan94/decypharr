@@ -1,0 +1,5 @@
+# Contains API keys — do not commit
+config.json
+auth.json
+logs/
+cache/

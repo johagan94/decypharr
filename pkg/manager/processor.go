@@ -23,6 +23,17 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 		err           error
 	)
 
+	// Deduplicate concurrent submissions of the same torrent (e.g. arr retry
+	// before the first attempt completes). If the hash is already in-flight or
+	// already tracked in the queue, return early so we do not hit the debrid
+	// API a second time (issue #308 — TorBox 24h account cooldown).
+	if _, loaded := m.submitInFlight.LoadOrStore(importReq.Magnet.InfoHash, struct{}{}); loaded {
+		m.logger.Debug().Str("hash", importReq.Magnet.InfoHash).Str("name", importReq.Magnet.Name).
+			Msg("Duplicate magnet submission ignored: already in flight")
+		return nil
+	}
+	defer m.submitInFlight.Delete(importReq.Magnet.InfoHash)
+
 	debridTorrent, err = m.SendToDebrid(ctx, importReq)
 	if err != nil {
 		// Check if too many active downloads

@@ -391,6 +391,59 @@ func (c *Client) ExecuteWithFailover(ctx context.Context, fn func(conn *Connecti
 	return errors.New("all providers failed")
 }
 
+// ExecuteBatch fetches a batch of message bodies in a single NNTP pipeline
+// round-trip using PipelinedBody. Unlike ExecuteWithFailover, which issues one
+// request per call, ExecuteBatch sends all BODY commands before reading any
+// response — amortising RTT across the whole batch.
+//
+// On a connection-level failure the batch is retried on a different provider.
+// Per-segment failures (article not found) are returned in BodyResult.Error
+// and do not abort the batch.
+func (c *Client) ExecuteBatch(ctx context.Context, messageIDs []string) ([]BodyResult, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+
+	var lastErr error
+	var exclusions providerExclusions
+
+	for providerAttempts := 0; providerAttempts < len(c.providers); providerAttempts++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		conn, connProvider, err := c.getAnyAvailableConnection(ctx, exclusions)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		results, pipeErr := conn.PipelinedBody(messageIDs)
+		c.returnOrReleaseConn(conn, connProvider)
+
+		if pipeErr == nil {
+			// Even with a nil error, individual results may have per-segment errors.
+			return results, nil
+		}
+
+		// Connection-level error: try another provider.
+		lastErr = pipeErr
+		var nntpErr *Error
+		if errors.As(pipeErr, &nntpErr) &&
+			(nntpErr.Type == ErrorTypeConnection || nntpErr.Type == ErrorTypeTimeout) {
+			exclusions.excludeHost(connProvider.Host)
+			continue
+		}
+		// Non-connection error — return immediately.
+		return results, pipeErr
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("all providers failed for batch")
+}
+
 // returnOrReleaseConn returns a connection to the pool or releases it if closed
 func (c *Client) returnOrReleaseConn(conn *Connection, provider config.UsenetProvider) {
 	if conn == nil {

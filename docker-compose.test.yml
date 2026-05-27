@@ -1,0 +1,34 @@
+name: decypharr-test
+
+services:
+  decypharr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.0.0-dev"
+        CHANNEL: "dev"
+    image: decypharr-test:latest
+    container_name: decypharr-test
+    ports:
+      - "8383:8282"   # offset from prod (8282) to avoid conflicts
+    volumes:
+      - ./test-config:/app
+      - ./test-data/downloads:/downloads
+      - ./test-data/cache:/tmp/dfs-cache
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      DECYPHARR_LOG_LEVEL: "debug"
+    # To wire Sonarr, uncomment extra_hosts and add arrs to test-config/config.json.
+    # Use Unraid's host IP since homelab Docker container names don't resolve from Docker Desktop.
+    # Lidarr http://192.168.76.25:8686 (already wired in test-config/config.json)
+    # extra_hosts:
+    #   - "host-gateway:host-gateway"
+    restart: "no"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -379,7 +380,15 @@ func verifySymlinkFileReady(path string) error {
 	if err != nil {
 		return fmt.Errorf("symlink target cannot be opened: %w", err)
 	}
-	return f.Close()
+	defer f.Close()
+	// Read 4 KB to trigger the first FUSE chunk fetch and prime the kernel VFS
+	// cache. Without this, ffprobe hits the pre-allocated but empty sparse file
+	// and enters D-state waiting for I/O that never returns (issue #250 / Fix A).
+	buf := make([]byte, 4096)
+	if _, err := f.Read(buf); err != nil && err != io.EOF {
+		return fmt.Errorf("symlink target not readable: %w", err)
+	}
+	return nil
 }
 
 func (d *Downloader) sleepUntilNextSymlinkAttempt(delay time.Duration, deadline time.Time) error {

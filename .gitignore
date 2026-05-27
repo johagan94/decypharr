@@ -19,4 +19,5 @@ auth.json
 node_modules/
 .venv/
 .stignore
-.stfolder/**
+.stfolder/**test-config/config.json
+test-data/

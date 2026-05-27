@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/sirrobot01/decypharr/internal/nntp"
+	"github.com/sirrobot01/decypharr/pkg/storage"
 	"github.com/sourcegraph/conc/pool"
 )
 
@@ -109,15 +109,29 @@ func (u *Usenet) Download(ctx context.Context, nzoID, filename string, writer io
 		}
 	}()
 
-	// Fetch segments in parallel
+	// Fetch segments in pipelined batches. Each goroutine acquires one NNTP
+	// connection and sends a full batch of BODY commands before reading any
+	// response, amortising per-segment RTT across pipelineBatchSize segments.
+	const pipelineBatchSize = 50
+
+	type segBatch struct {
+		startIdx int
+		segs     []storage.NZBSegment
+	}
+	var batches []segBatch
+	for i := 0; i < len(file.Segments); i += pipelineBatchSize {
+		end := i + pipelineBatchSize
+		if end > len(file.Segments) {
+			end = len(file.Segments)
+		}
+		batches = append(batches, segBatch{startIdx: i, segs: file.Segments[i:end]})
+	}
+
 	p := pool.New().WithContext(ctx).WithMaxGoroutines(max(u.maxConnections, 1))
 
-	for idx, segment := range file.Segments {
-		segIdx := idx
-		seg := segment
-
+	for _, batch := range batches {
+		b := batch
 		p.Go(func(ctx context.Context) error {
-			// Check for write errors
 			writeErrMu.Lock()
 			if writeErr != nil {
 				writeErrMu.Unlock()
@@ -125,38 +139,51 @@ func (u *Usenet) Download(ctx context.Context, nzoID, filename string, writer io
 			}
 			writeErrMu.Unlock()
 
-			// Check context
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 
-			// Fetch segment using manager with failover
-			var data []byte
-			err := u.nntp.ExecuteWithFailover(ctx, func(conn *nntp.Connection) error {
-				d, e := conn.GetDecodedBody(seg.MessageID)
-				data = d
-				return e
-			})
-			if err != nil {
-				resultChan <- segmentResult{index: segIdx, err: fmt.Errorf("segment %d: %w", segIdx, err)}
-				return nil // Don't stop other workers
+			// Build message-ID slice for this batch.
+			msgIDs := make([]string, len(b.segs))
+			for i, s := range b.segs {
+				msgIDs[i] = s.MessageID
 			}
 
-			// Handle SegmentDataStart for sliced segments
-			if seg.SegmentDataStart > 0 {
-				if seg.SegmentDataStart >= int64(len(data)) {
-					resultChan <- segmentResult{index: segIdx, err: fmt.Errorf("segment %d: offset exceeds data", segIdx)}
-					return nil
+			// Pipeline all BODY commands in one round-trip.
+			results, err := u.nntp.ExecuteBatch(ctx, msgIDs)
+			if err != nil && results == nil {
+				// Total connection failure for the batch.
+				for i, s := range b.segs {
+					resultChan <- segmentResult{
+						index: b.startIdx + i,
+						err:   fmt.Errorf("segment %d (%s): %w", b.startIdx+i, s.MessageID, err),
+					}
 				}
-				data = data[seg.SegmentDataStart:]
+				return nil
 			}
 
-			// Trim to expected size
-			if int64(len(data)) > seg.Bytes {
-				data = data[:seg.Bytes]
-			}
+			for i, result := range results {
+				segIdx := b.startIdx + i
+				seg := b.segs[i]  // storage.NZBSegment
 
-			resultChan <- segmentResult{index: segIdx, data: data}
+				if result.Error != nil {
+					resultChan <- segmentResult{index: segIdx, err: fmt.Errorf("segment %d: %w", segIdx, result.Error)}
+					continue
+				}
+
+				data := result.Data
+				if seg.SegmentDataStart > 0 {
+					if seg.SegmentDataStart >= int64(len(data)) {
+						resultChan <- segmentResult{index: segIdx, err: fmt.Errorf("segment %d: offset exceeds data", segIdx)}
+						continue
+					}
+					data = data[seg.SegmentDataStart:]
+				}
+				if int64(len(data)) > seg.Bytes {
+					data = data[:seg.Bytes]
+				}
+				resultChan <- segmentResult{index: segIdx, data: data}
+			}
 			return nil
 		})
 	}
