@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"os"
 	"path/filepath"
 	"sync"
@@ -940,6 +941,12 @@ func (u *Usenet) Delete(nzoID string) error {
 
 // ProcessNewNZBs scans the metadata directory for unprocessed NZB files, parses them, and returns the new NZBs
 func (u *Usenet) ProcessNewNZBs(ctx context.Context) ([]*storage.NZB, error) {
+	// Sweep stale .processing markers — these get left behind when Decypharr
+	// crashes mid-NZB-processing, then permanently block the NZB from being
+	// re-attempted. Anything older than 1h is treated as definitely stale
+	// (longest legitimate processing should be well under that).
+	u.clearStaleProcessingMarkers(time.Hour)
+
 	entries, err := os.ReadDir(u.metadataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata dir: %w", err)
@@ -1069,4 +1076,37 @@ func (u *Usenet) processNZBFile(ctx context.Context, filename string) (*storage.
 	}
 
 	return nzb, nil
+}
+
+
+// clearStaleProcessingMarkers removes .processing marker files older than
+// `maxAge`. Left-behind markers from crashed processing runs would
+// otherwise permanently block re-attempts.
+func (u *Usenet) clearStaleProcessingMarkers(maxAge time.Duration) {
+	entries, err := os.ReadDir(u.metadataDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	cleared := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".processing") {
+			continue
+		}
+		path := filepath.Join(u.metadataDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(path); err == nil {
+			cleared++
+		}
+	}
+	if cleared > 0 {
+		u.logger.Info().Int("count", cleared).Dur("max_age", maxAge).
+			Msg("cleared stale .processing markers from previous run")
+	}
 }

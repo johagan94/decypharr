@@ -298,10 +298,20 @@ func (c *Cache) scanDiskCandidates() ([]candidateEntry, int64) {
 				continue
 			}
 
-			// Verify data file exists
+			// Verify data file exists. When the data file is gone (typically
+			// because the OS evicted from disk pressure but our metadata
+			// survived), the metadata entry is orphaned — clean it up so it
+			// doesn't get re-warned about on every subsequent restart.
 			dataStat, err := os.Stat(dataPath)
 			if err != nil {
-				c.logger.Warn().Err(err).Str("path", dataPath).Msg("cache data file missing")
+				c.logger.Debug().Err(err).Str("path", dataPath).Msg("cache data file missing — pruning orphan metadata")
+				_ = os.Remove(metaPath)
+				// If the entry dir is now empty, drop it too. RemoveAll is
+				// not used here on purpose — we only delete the dir if it
+				// has nothing left, never recursively.
+				if remaining, rerr := os.ReadDir(entryDir); rerr == nil && len(remaining) == 0 {
+					_ = os.Remove(entryDir)
+				}
 				continue
 			}
 
