@@ -80,10 +80,11 @@ type Arr struct {
 	DownloadUncached *bool  `json:"download_uncached,omitempty"`
 	SelectedDebrid   string `json:"selected_debrid,omitempty"`
 	Source           string `json:"source,omitempty"` // The source of the arr, e.g. "auto", "config", "". Auto means it was automatically detected from the arr
+	ForceDownload    bool   `json:"force_download,omitempty"` // always download to disk instead of DFS symlink (e.g. Lidarr needs local files for metadata tagging)
 }
 
 func (a Arr) IsZero() bool {
-	return a.Name == "" && a.Host == "" && a.Token == "" && !a.Cleanup && !a.SkipRepair && a.DownloadUncached == nil && a.SelectedDebrid == "" && a.Source == ""
+	return a.Name == "" && a.Host == "" && a.Token == "" && !a.Cleanup && !a.SkipRepair && a.DownloadUncached == nil && a.SelectedDebrid == "" && a.Source == "" && !a.ForceDownload
 }
 
 type CustomFolders struct {

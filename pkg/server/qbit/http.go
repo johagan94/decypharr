@@ -124,6 +124,12 @@ func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
 		// Arr is not in context
 		_arr = arr.New(category, "", "", false, false, nil, "", "")
 	}
+	// Per-arr download override: if ForceDownload is set (e.g. Lidarr needs
+	// local files for beets/tagger to write ID3/FLAC metadata), always use
+	// the download action regardless of the global default or request flag.
+	if _arr.ForceDownload {
+		action = config.DownloadActionDownload
+	}
 	atleastOne := false
 
 	// Handle magnet URLs
