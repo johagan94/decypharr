@@ -383,6 +383,22 @@ func (c *Cache) newItem(key, entryName, filename string, fileSize int64) (*Cache
 	item.startFadviseWorker()
 	item.markMetadataDirty()
 
+	// Pre-warm: async download of the first 2 MB so the container header is
+	// available before ffprobe or any other reader issues its first FUSE Read.
+	// Without this, ffprobe hits a pre-allocated-but-empty sparse file and
+	// blocks in kernel I/O wait (D-state) for up to ReadTimeout seconds.
+	// The downloader continues running even if the 30s context expires, so
+	// data keeps arriving in the background.
+	go func() {
+		prewarmSize := int64(2 * 1024 * 1024)
+		if prewarmSize > fileSize {
+			prewarmSize = fileSize
+		}
+		ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+		defer cancel()
+		_ = item.downloaders.Download(ctx, ranges.Range{Pos: 0, Size: prewarmSize})
+	}()
+
 	return item, nil
 }
 

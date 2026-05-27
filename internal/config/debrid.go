@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"runtime"
 )
 
 type Debrid struct {
@@ -38,8 +37,12 @@ type Debrid struct {
 }
 
 func (c *Config) updateDebrid(d Debrid) Debrid {
-	workers := runtime.NumCPU() * 50
-	perDebrid := workers / len(c.Debrids)
+	// Default: 15 workers per provider. The former default (NumCPU * 50)
+	// saturated CPU and RAM on home servers — a 4-core machine produced
+	// 200 concurrent HTTP connections, causing OOM kills and CPU spikes.
+	// Set workers explicitly in config.json if your server can handle more.
+	const defaultWorkersPerProvider = 15
+	perDebrid := defaultWorkersPerProvider
 
 	if d.Provider == "" {
 		d.Provider = d.Name
