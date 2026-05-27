@@ -86,6 +86,10 @@ func (s *Server) WebRoutes() http.Handler {
 				r.Get("/download/{torrent}/{file}", s.handleDownloadFile)
 			})
 
+			// Mount health — polled by external watchdogs (e.g. Warden) to detect
+			// mount-down events and pause library scans before they wipe content.
+			r.Get("/health/mount", s.handleMountHealth)
+
 			// Config/Auth
 			r.Get("/config", s.handleGetConfig)
 			r.Post("/config", s.handleUpdateConfig)

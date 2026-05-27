@@ -475,10 +475,38 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Restart services asynchronously
-	go s.Restart()
+	// Only restart when server or mount config actually changed.
+	// Arr/notification/log changes are hot-reloadable and must not tear down the DFS mount.
+	if requiresRestart(currentConfig, &newConfig) {
+		go s.Restart()
+	}
 
 	utils.JSONResponse(w, map[string]string{"status": "success"}, http.StatusOK)
+}
+
+// requiresRestart returns true only when the saved config change needs a full service restart.
+// Fields like arrs, log level, notifications, and workers are hot-reloaded in-place.
+func requiresRestart(old, new *config.Config) bool {
+	// HTTP server bind changes
+	if old.Port != new.Port || old.BindAddress != new.BindAddress || old.URLBase != new.URLBase {
+		return true
+	}
+	// Mount topology changes — remounting the FUSE filesystem is required
+	if old.Mount.Type != new.Mount.Type || old.Mount.MountPath != new.Mount.MountPath {
+		return true
+	}
+	// Debrid provider credential changes — need to reconnect
+	if len(old.Debrids) != len(new.Debrids) {
+		return true
+	}
+	for i := range new.Debrids {
+		if old.Debrids[i].Provider != new.Debrids[i].Provider ||
+			old.Debrids[i].APIKey != new.Debrids[i].APIKey ||
+			old.Debrids[i].Name != new.Debrids[i].Name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleGetRepairConfig(w http.ResponseWriter, r *http.Request) {
@@ -944,4 +972,28 @@ func (s *Server) handleUpdateAuth(w http.ResponseWriter, r *http.Request) {
 	utils.JSONResponse(w, map[string]string{
 		"message": "Authentication settings updated successfully",
 	}, http.StatusOK)
+}
+
+func (s *Server) handleMountHealth(w http.ResponseWriter, r *http.Request) {
+	mm := s.manager.MountManager()
+	ready := mm != nil && mm.IsReady()
+
+	stats := map[string]interface{}{}
+	if mm != nil {
+		stats = mm.Stats()
+	}
+
+	cfg := config.Get()
+	resp := map[string]interface{}{
+		"ready":      ready,
+		"type":       cfg.Mount.Type,
+		"mount_path": cfg.Mount.MountPath,
+		"stats":      stats,
+	}
+
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	utils.JSONResponse(w, resp, status)
 }

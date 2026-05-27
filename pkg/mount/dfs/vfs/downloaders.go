@@ -480,6 +480,13 @@ func (dls *Downloaders) countErrors(n int64, err error) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
+		// Stall timeouts are transient CDN/network events, not data availability errors.
+		// The retry logic in downloadChunkWithRetry already handles them; counting
+		// them toward the circuit breaker causes 20-minute blackouts on any hiccup.
+		if customerror.IsRetriableError(err) && n == 0 {
+			dls.item.logger.Debug().Err(err).Msg("retriable stall, not counting toward circuit breaker")
+			return
+		}
 		dls.errorCount++
 		dls.lastErr = err
 		if !customerror.IsSilentError(err) {
