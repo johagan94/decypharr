@@ -93,6 +93,7 @@ type Manager struct {
 
 	// NZB processing worker pool (unbounded queue)
 	nzbQueue      *nzbJobQueue
+	nzbFailCache  *nzbFailCache
 	nzbWorkerStop chan struct{} // Signal to stop workers
 
 	// Notifications service
@@ -263,6 +264,10 @@ func (m *Manager) initUsenet() {
 
 	// Create unbounded job queue
 	m.nzbQueue = newNzbJobQueue()
+	// Cache NZBs that failed with non-transient errors so Lidarr retry
+	// loops don't make us re-fetch dead articles over and over. 24h TTL
+	// gives transient issues a fair chance to recover overnight.
+	m.nzbFailCache = newNzbFailCache(24*time.Hour, 1000)
 	m.nzbWorkerStop = make(chan struct{})
 
 	// Start worker goroutines

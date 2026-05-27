@@ -24,9 +24,27 @@ func (m *Manager) AddNewNZB(ctx context.Context, req *ImportRequest) (string, er
 		Str("category", req.Arr.Name).
 		Msg("Adding new NZB to usenet")
 
+	// Fast-fail: if this exact NZB content recently failed with a
+	// permanent error (dead articles, no valid files), refuse without
+	// re-fetching from the usenet provider. Otherwise Lidarr's
+	// redownload-on-failure can loop us forever on a single dead release.
+	contentHash := hashNZBContent(req.NZBContent)
+	if m.nzbFailCache != nil {
+		if reason, hit := m.nzbFailCache.Lookup(contentHash); hit {
+			m.logger.Info().
+				Str("name", req.Name).
+				Str("cached_reason", reason).
+				Msg("NZB previously failed with permanent error — refusing without re-fetch")
+			return "", fmt.Errorf("nzb previously failed: %s", reason)
+		}
+	}
+
 	// Parse NZB through usenet client
 	meta, groups, err := m.usenet.Parse(ctx, req.Name, req.NZBContent, req.Arr.Name)
 	if err != nil {
+		if m.nzbFailCache != nil && isPermanentNZBFailure(err) {
+			m.nzbFailCache.Record(contentHash, err.Error())
+		}
 		return "", fmt.Errorf("usenet process failed: %w", err)
 	}
 
@@ -119,6 +137,12 @@ func (m *Manager) processNewNzb(entry *storage.Entry, metadata *storage.NZB, gro
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return fmt.Errorf("usenet processing timed out after %s: %w", m.usenetTimeout, err)
+		}
+		if m.nzbFailCache != nil && isPermanentNZBFailure(err) {
+			// Cache by infohash since we no longer hold the raw content here.
+			// Same NZB submitted again will be hashed at AddNewNZB time and
+			// look up against THIS infohash entry too (added below).
+			m.nzbFailCache.Record(metadata.ID, err.Error())
 		}
 		return fmt.Errorf("failed to process nzb: %w", err)
 	}
