@@ -26,6 +26,97 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// subtitleExtensions covers external subtitle formats Jellyfin / MPV / VLC
+// load alongside video files. Sub files are tiny (<2 MB nearly always), so
+// pre-warming the whole file is essentially free and eliminates the stall
+// the player would otherwise hit on first subtitle render.
+var subtitleExtensions = map[string]struct{}{
+	".srt":  {},
+	".ass":  {},
+	".ssa":  {},
+	".sub":  {},
+	".idx":  {},
+	".vtt":  {},
+	".sup":  {},
+	".sbv":  {},
+	".smi":  {},
+	".dfxp": {},
+}
+
+// videoExtensions are the file types where bigger pre-warm pays off — the
+// 16 MB initial buffer covers roughly the first 30 seconds of a 5 Mbps stream,
+// which is the typical "cold start" window before Jellyfin's player catches up.
+var videoExtensions = map[string]struct{}{
+	".mkv":  {},
+	".mp4":  {},
+	".m4v":  {},
+	".mov":  {},
+	".avi":  {},
+	".webm": {},
+	".ts":   {},
+	".m2ts": {},
+	".mpg":  {},
+	".mpeg": {},
+	".wmv":  {},
+	".flv":  {},
+	".vob":  {},
+	".divx": {},
+}
+
+// audioExtensions get a mid-sized pre-warm. Audio bitrates are low enough that
+// 8 MB covers tens of seconds — plenty for ID3 reading + immediate playback.
+var audioExtensions = map[string]struct{}{
+	".flac": {},
+	".mp3":  {},
+	".m4a":  {},
+	".ogg":  {},
+	".opus": {},
+	".wav":  {},
+	".aac":  {},
+	".alac": {},
+	".wma":  {},
+	".dsf":  {},
+	".dff":  {},
+}
+
+// prewarmSizeFor returns how many bytes to pre-warm when a new cache item
+// is created. Sized by file type so the player has enough buffer to start
+// without stalling, but small enough that we don't waste debrid bandwidth
+// on files that may never be played.
+func prewarmSizeFor(filename string, fileSize int64) int64 {
+	const (
+		headerSize    = 2 * 1024 * 1024  // ffprobe header — fits MP4 moov atom, MKV cluster, etc.
+		audioPrewarm  = 8 * 1024 * 1024  // ID3 + ~30s of typical audio bitrates
+		videoPrewarm  = 16 * 1024 * 1024 // ~30s at 5 Mbps — covers cold start of typical 1080p
+		subtitleCap   = 8 * 1024 * 1024  // safety cap for pathological .sub PGS dumps
+	)
+	ext := strings.ToLower(filepath.Ext(filename))
+
+	var target int64
+	switch {
+	case extInSet(ext, subtitleExtensions):
+		target = fileSize // fetch the whole subtitle
+		if target > subtitleCap {
+			target = subtitleCap
+		}
+	case extInSet(ext, videoExtensions):
+		target = videoPrewarm
+	case extInSet(ext, audioExtensions):
+		target = audioPrewarm
+	default:
+		target = headerSize
+	}
+	if target > fileSize {
+		target = fileSize
+	}
+	return target
+}
+
+func extInSet(ext string, set map[string]struct{}) bool {
+	_, ok := set[ext]
+	return ok
+}
+
 const (
 	metaFlushInterval = 2 * time.Second
 
@@ -390,11 +481,23 @@ func (c *Cache) newItem(key, entryName, filename string, fileSize int64) (*Cache
 	// The downloader continues running even if the 30s context expires, so
 	// data keeps arriving in the background.
 	go func() {
-		prewarmSize := int64(2 * 1024 * 1024)
-		if prewarmSize > fileSize {
-			prewarmSize = fileSize
+		prewarmSize := prewarmSizeFor(filename, fileSize)
+		// Subtitle files use a longer timeout because we're fetching the
+		// whole file, not just a header. Capping at 60s keeps stuck downloads
+		// from blocking the goroutine forever.
+		// Timeout scales with pre-warm size — bigger fetches need more time
+		// on slow links. 30s is plenty for 2 MB; 90s covers the 16 MB video case
+		// even on a 2 Mbps connection.
+		timeout := 30 * time.Second
+		ext := strings.ToLower(filepath.Ext(filename))
+		if _, ok := subtitleExtensions[ext]; ok {
+			timeout = 60 * time.Second
+		} else if _, ok := videoExtensions[ext]; ok {
+			timeout = 90 * time.Second
+		} else if _, ok := audioExtensions[ext]; ok {
+			timeout = 60 * time.Second
 		}
-		ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+		ctx, cancel := context.WithTimeout(c.ctx, timeout)
 		defer cancel()
 		_ = item.downloaders.Download(ctx, ranges.Range{Pos: 0, Size: prewarmSize})
 	}()

@@ -145,6 +145,18 @@ func (s *Server) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) IndexHandler(w http.ResponseWriter, r *http.Request) {
+	// Healthcheck short-circuit: the bundled Docker healthcheck hits / with
+	// `wget --spider`, which discards the body after headers. Rendering the
+	// full HTML for every probe is wasted work and produces broken-pipe
+	// warnings as wget closes the socket mid-write. Detect the probe via UA
+	// and return a fast cheap 200 instead. Browsers (User-Agent: Mozilla/...)
+	// still get the real UI.
+	if isHealthcheckProbe(r) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK\n"))
+		return
+	}
 	cfg := config.Get()
 	data := map[string]interface{}{
 		"URLBase":    cfg.URLBase,
@@ -155,11 +167,36 @@ func (s *Server) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	err := s.templates.ExecuteTemplate(w, "layout", data)
 	if err != nil {
 		if isClientDisconnect(err) {
-		s.logger.Debug().Err(err).Msg("error rendering /index template (client disconnected)")
+			s.logger.Debug().Err(err).Msg("error rendering /index template (client disconnected)")
 		} else {
-		s.logger.Warn().Err(err).Msg("error rendering /index template")
+			s.logger.Warn().Err(err).Msg("error rendering /index template")
 		}
 	}
+}
+
+// isHealthcheckProbe heuristically detects requests from container
+// healthcheck tooling so we can serve them a tiny 200 OK without rendering.
+// Matches: wget, curl, and any UA that mentions "health". Skipped (returns
+// false) when the Accept header explicitly asks for text/html — somebody
+// who really wants the UI from those tools can still get it with `wget
+// --header="Accept: text/html"`.
+func isHealthcheckProbe(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	if strings.Contains(accept, "text/html") {
+		return false
+	}
+	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	if ua == "" {
+		return false
+	}
+	return strings.HasPrefix(ua, "wget/") ||
+		strings.HasPrefix(ua, "curl/") ||
+		strings.Contains(ua, "healthcheck") ||
+		strings.Contains(ua, "docker-healthcheck") ||
+		strings.Contains(ua, "kube-probe")
 }
 
 func (s *Server) DownloadHandler(w http.ResponseWriter, r *http.Request) {

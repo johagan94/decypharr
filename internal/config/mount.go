@@ -61,6 +61,8 @@ type DFS struct {
 
 	DaemonTimeout   string `json:"daemon_timeout,omitempty"`    // Time after which the FUSE daemon will exit if idle
 	CircuitCooldown string `json:"circuit_cooldown,omitempty"`  // How long a file's circuit breaker stays open after max errors (default 20m)
+	AttrTimeout     string `json:"attr_timeout,omitempty"`      // Kernel cache TTL for stat() results (default 30s)
+	EntryTimeout    string `json:"entry_timeout,omitempty"`     // Kernel cache TTL for directory entries (default 1s — raise to 30s+ for faster Jellyfin scans)
 
 	// File system settings
 	UID                uint32 `json:"uid,omitempty"`                 // User ID for mounted files

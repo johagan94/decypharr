@@ -25,6 +25,8 @@ const (
 	// ReadTimeout is the maximum time a single read operation can take
 	// Increased to 120s to handle slow debrid/CDN connections
 	ReadTimeout  = 120 * time.Second
+	// AttrTimeout / EntryTimeout are fallback defaults when no config
+	// override is set. The active values come from FuseConfig at mount time.
 	AttrTimeout  = 30 * time.Second
 	EntryTimeout = 1 * time.Second
 )
@@ -93,8 +95,14 @@ func (b *Backend) Mount(ctx context.Context) error {
 	}
 	mountOpt.Options = opt
 
-	entryTimeout := EntryTimeout
-	attrTimeout := AttrTimeout
+	entryTimeout := b.config.EntryTimeout
+	if entryTimeout <= 0 {
+		entryTimeout = EntryTimeout
+	}
+	attrTimeout := b.config.AttrTimeout
+	if attrTimeout <= 0 {
+		attrTimeout = AttrTimeout
+	}
 	opts := &fs.Options{
 		AttrTimeout:  &attrTimeout,
 		EntryTimeout: &entryTimeout,

@@ -31,6 +31,11 @@ type FuseConfig struct {
 	// Circuit breaker settings
 	CircuitCooldownDuration time.Duration
 
+	// FUSE kernel cache TTLs. Higher values reduce the number of
+	// userspace round-trips during library scans.
+	AttrTimeout  time.Duration
+	EntryTimeout time.Duration
+
 	// File system settings
 	UID                uint32
 	GID                uint32
@@ -49,6 +54,9 @@ func DefaultFuseConfig() *FuseConfig {
 
 		Retries:                 3,
 		CircuitCooldownDuration: 20 * time.Minute, // matches historical hardcoded default
+
+		AttrTimeout:  30 * time.Second,
+		EntryTimeout: 1 * time.Second, // conservative default; users with stable libraries should raise to 30-60s
 
 		// File system defaults
 		UID:                1000,
@@ -129,6 +137,16 @@ func ParseFuseConfig() *FuseConfig {
 	if cfg.CircuitCooldown != "" {
 		if d, err := utils.ParseDuration(cfg.CircuitCooldown); err == nil {
 			fuseConfig.CircuitCooldownDuration = d
+		}
+	}
+	if cfg.AttrTimeout != "" {
+		if d, err := utils.ParseDuration(cfg.AttrTimeout); err == nil && d > 0 {
+			fuseConfig.AttrTimeout = d
+		}
+	}
+	if cfg.EntryTimeout != "" {
+		if d, err := utils.ParseDuration(cfg.EntryTimeout); err == nil && d > 0 {
+			fuseConfig.EntryTimeout = d
 		}
 	}
 

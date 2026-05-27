@@ -176,14 +176,24 @@ func (w *Warden) runStartupReconciliation(ctx context.Context) {
 		if a == nil || a.Host == "" || a.Token == "" {
 			continue
 		}
+		if !isArrAvailable(a) {
+			w.logger.Debug().Str("arr", a.Name).Msg("Warden: skipping arr (previously unreachable this session)")
+			continue
+		}
 		if w.cfg.DryRun {
 			w.logger.Info().Str("arr", a.Name).Msg("Warden: [DRY RUN] would refresh monitored downloads")
 			continue
 		}
 		if err := refreshDownload(ctx, a); err != nil {
-			w.logger.Warn().Err(err).Str("arr", a.Name).Msg("Warden: refresh failed")
+			if recordArrFailure(a) {
+				w.logger.Warn().Err(err).Str("arr", a.Name).
+					Msg("Warden: arr unreachable after 3 attempts, skipping for the rest of this session")
+			} else {
+				w.logger.Debug().Err(err).Str("arr", a.Name).Msg("Warden: refresh failed (will retry next cycle)")
+			}
 			continue
 		}
+		recordArrSuccess(a)
 		w.logger.Info().Str("arr", a.Name).Msg("Warden: refresh sent")
 	}
 }
@@ -233,7 +243,20 @@ func (w *Warden) runDefenceCycle(ctx context.Context) {
 		if a == nil || a.Host == "" || a.Token == "" {
 			continue
 		}
+		if !isArrAvailable(a) {
+			continue
+		}
 		queue := a.GetQueue()
+		// GetQueue uses arr.go's shared retrying client. If THAT failed,
+		// we should not waste another cycle trying to delete from this arr.
+		if len(queue) == 0 && !pingArr(ctx, a) {
+			if recordArrFailure(a) {
+				w.logger.Warn().Str("arr", a.Name).
+					Msg("Warden: arr unreachable after 3 attempts, skipping for rest of session")
+			}
+			continue
+		}
+		recordArrSuccess(a)
 		refreshedThisArr := false
 		for _, item := range queue {
 			if batchCap > 0 && removed >= batchCap {
@@ -335,4 +358,20 @@ func FromConfig(c config.Warden) WardenConfig {
 		Actions:            c.Actions,
 		ReadyTimeout:       c.ReadyTimeout,
 	}
+}
+
+
+// pingArr does a cheap (<3s) HEAD against the arr's tag endpoint, which every
+// arr exposes and which is small. Used by the defence loop to distinguish
+// "queue is empty" from "arr is unreachable" before issuing a destructive
+// DELETE attempt.
+func pingArr(ctx context.Context, a *arr.Arr) bool {
+	resp, err := arrFastRequest(ctx, a, "GET", a.APIBase()+"/tag", nil)
+	if err != nil {
+		return false
+	}
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
