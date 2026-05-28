@@ -85,10 +85,10 @@ var audioExtensions = map[string]struct{}{
 // on files that may never be played.
 func prewarmSizeFor(filename string, fileSize int64) int64 {
 	const (
-		headerSize    = 2 * 1024 * 1024  // ffprobe header — fits MP4 moov atom, MKV cluster, etc.
-		audioPrewarm  = 8 * 1024 * 1024  // ID3 + ~30s of typical audio bitrates
-		videoPrewarm  = 16 * 1024 * 1024 // ~30s at 5 Mbps — covers cold start of typical 1080p
-		subtitleCap   = 8 * 1024 * 1024  // safety cap for pathological .sub PGS dumps
+		headerSize   = 2 * 1024 * 1024  // ffprobe header — fits MP4 moov atom, MKV cluster, etc.
+		audioPrewarm = 8 * 1024 * 1024  // ID3 + ~30s of typical audio bitrates
+		videoPrewarm = 16 * 1024 * 1024 // ~30s at 5 Mbps — covers cold start of typical 1080p
+		subtitleCap  = 8 * 1024 * 1024  // safety cap for pathological .sub PGS dumps
 	)
 	ext := strings.ToLower(filepath.Ext(filename))
 
@@ -115,6 +115,27 @@ func prewarmSizeFor(filename string, fileSize int64) int64 {
 func extInSet(ext string, set map[string]struct{}) bool {
 	_, ok := set[ext]
 	return ok
+}
+
+// tailPrewarmSize returns how many trailing bytes to pre-warm for containers
+// that may store their index/moov atom at EOF. Non-faststart MP4/MOV/M4V store
+// the moov atom at the end of the file, so ffprobe seeks there after reading
+// the header — a cold tail fetch stalls ffprobe (and the arr import with it).
+// Returns 0 for formats that always front-load headers (MKV/WebM front-load the
+// segment header + first cluster), for non-mp4 containers, and when the head
+// pre-warm already reaches the end of the file (so we never double-fetch).
+func tailPrewarmSize(filename string, fileSize, headWarmed int64) int64 {
+	const tailSize = 4 * 1024 * 1024 // covers a typical moov atom at EOF
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mp4", ".mov", ".m4v", ".m4a", ".m4p", ".3gp", ".qt":
+		// Only worth it when there is a genuinely separate tail region beyond
+		// what the head pre-warm already fetched.
+		if fileSize <= headWarmed+tailSize {
+			return 0
+		}
+		return tailSize
+	}
+	return 0
 }
 
 const (
@@ -484,20 +505,17 @@ func (c *Cache) newItem(key, entryName, filename string, fileSize int64) (*Cache
 	item.startFadviseWorker()
 	item.markMetadataDirty()
 
-	// Pre-warm: async download of the first 2 MB so the container header is
-	// available before ffprobe or any other reader issues its first FUSE Read.
-	// Without this, ffprobe hits a pre-allocated-but-empty sparse file and
-	// blocks in kernel I/O wait (D-state) for up to ReadTimeout seconds.
-	// The downloader continues running even if the 30s context expires, so
-	// data keeps arriving in the background.
+	// Pre-warm: async download of the container header so ffprobe/players have
+	// data available before issuing their first FUSE Read. Without this, a
+	// reader hits a pre-allocated-but-empty sparse file and blocks in kernel
+	// I/O wait (D-state) for up to ReadTimeout seconds. The downloader keeps
+	// running even if the context expires, so data keeps arriving in the
+	// background.
+	prewarmSize := prewarmSizeFor(filename, fileSize)
 	go func() {
-		prewarmSize := prewarmSizeFor(filename, fileSize)
-		// Subtitle files use a longer timeout because we're fetching the
-		// whole file, not just a header. Capping at 60s keeps stuck downloads
-		// from blocking the goroutine forever.
-		// Timeout scales with pre-warm size — bigger fetches need more time
-		// on slow links. 30s is plenty for 2 MB; 90s covers the 16 MB video case
-		// even on a 2 Mbps connection.
+		// Timeout scales with pre-warm size — bigger fetches need more time on
+		// slow links. 30s is plenty for a 2 MB header; 90s covers the 16 MB
+		// video case even on a 2 Mbps connection.
 		timeout := 30 * time.Second
 		ext := strings.ToLower(filepath.Ext(filename))
 		if _, ok := subtitleExtensions[ext]; ok {
@@ -511,6 +529,18 @@ func (c *Cache) newItem(key, entryName, filename string, fileSize int64) (*Cache
 		defer cancel()
 		_ = item.downloaders.Download(ctx, ranges.Range{Pos: 0, Size: prewarmSize})
 	}()
+
+	// Tail pre-warm for mp4-family containers whose moov atom may live at EOF.
+	// ffprobe seeks to the end to find it after reading the header; warming the
+	// tail keeps that seek from triggering a cold fetch that stalls ffprobe and
+	// the arr's import along with it (issues #250 / #231).
+	if tail := tailPrewarmSize(filename, fileSize, prewarmSize); tail > 0 {
+		go func() {
+			ctx, cancel := context.WithTimeout(c.ctx, 90*time.Second)
+			defer cancel()
+			_ = item.downloaders.Download(ctx, ranges.Range{Pos: fileSize - tail, Size: tail})
+		}()
+	}
 
 	return item, nil
 }
