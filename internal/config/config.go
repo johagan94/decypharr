@@ -79,7 +79,7 @@ type Arr struct {
 	SkipRepair       bool   `json:"skip_repair,omitempty"`
 	DownloadUncached *bool  `json:"download_uncached,omitempty"`
 	SelectedDebrid   string `json:"selected_debrid,omitempty"`
-	Source           string `json:"source,omitempty"` // The source of the arr, e.g. "auto", "config", "". Auto means it was automatically detected from the arr
+	Source           string `json:"source,omitempty"`         // The source of the arr, e.g. "auto", "config", "". Auto means it was automatically detected from the arr
 	ForceDownload    bool   `json:"force_download,omitempty"` // always download to disk instead of DFS symlink (e.g. Lidarr needs local files for metadata tagging)
 }
 
@@ -148,6 +148,12 @@ type Config struct {
 	URLBase     string `json:"url_base,omitempty"`
 	AppURL      string `json:"app_url,omitempty"`
 	Port        string `json:"port,omitempty"`
+
+	// PprofAddr, when set (e.g. "127.0.0.1:6060"), starts a Go pprof
+	// profiling HTTP server on that address for performance debugging.
+	// Bind to localhost only (pprof exposes memory + is a DoS vector).
+	// Empty = disabled.
+	PprofAddr string `json:"pprof_addr,omitempty"`
 
 	LogLevel string   `json:"log_level,omitempty"`
 	Debrids  []Debrid `json:"debrids,omitzero"`

@@ -3,6 +3,8 @@ package decypharr
 import (
 	"context"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -42,6 +44,21 @@ func Start(ctx context.Context) error {
 	}
 
 	mgr := manager.New()
+
+	// Optional pprof profiling endpoint. Disabled unless pprof_addr is set in
+	// config (e.g. "127.0.0.1:6060"). Bind to localhost only — pprof exposes
+	// process memory and is a DoS vector if exposed publicly. Started once for
+	// the lifetime of the process (survives manager restarts).
+	if addr := config.Get().PprofAddr; addr != "" {
+		go func(addr string) {
+			l := logger.Default()
+			l.Info().Str("addr", addr).Msg("pprof profiling endpoint enabled")
+			//nolint:gosec // bound to operator-chosen (localhost) addr; debug-only
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				l.Warn().Err(err).Msg("pprof endpoint stopped")
+			}
+		}(addr)
+	}
 
 	svcCtx, cancelSvc := context.WithCancel(ctx)
 	defer cancelSvc()

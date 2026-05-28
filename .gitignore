@@ -24,3 +24,6 @@ test-data/
 
 # Fork build artifact
 decypharr_fork
+
+# pprof artifacts
+*.prof
