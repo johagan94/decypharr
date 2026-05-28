@@ -86,6 +86,12 @@ type Manager struct {
 	// so a retrying arr cannot trigger multiple debrid API calls for the same torrent.
 	submitInFlight *xsync.Map[string, struct{}]
 
+	// nzbContentHash bridges an NZB's random per-parse meta.ID to the stable
+	// sha256 of its content, so a download-time failure can be recorded under
+	// the content hash that AddNewNZB looks up on a re-grab (meta.ID is a
+	// fresh UUID each parse and would never match).
+	nzbContentHash *xsync.Map[string, string]
+
 	// recentlyDeleted is a short-lived tombstone (InfoHash -> deletion time).
 	// Prevents the next refresh cycle from re-adding a torrent just deleted from
 	// debrid before propagation completes (RealDebrid issue #236).
@@ -166,6 +172,7 @@ func New() *Manager {
 		activeStreams:          xsync.NewMap[string, *ActiveStream](),
 		processingEntries:      xsync.NewMap[string, struct{}](),
 		submitInFlight:         xsync.NewMap[string, struct{}](),
+		nzbContentHash:         xsync.NewMap[string, string](),
 		recentlyDeleted:        xsync.NewMap[string, time.Time](),
 	}
 

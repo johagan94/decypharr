@@ -13,6 +13,23 @@ import (
 	"github.com/sirrobot01/decypharr/pkg/usenet/parser"
 )
 
+// recordNZBContentFailure records a permanent NZB failure under the stable
+// content hash mapped from its (random) meta.ID, falling back to the id itself
+// if the bridge entry is gone. The bridge entry is cleared once recorded.
+func (m *Manager) recordNZBContentFailure(infohash, reason string) {
+	if m.nzbFailCache == nil {
+		return
+	}
+	key := infohash
+	if m.nzbContentHash != nil {
+		if ch, ok := m.nzbContentHash.Load(infohash); ok {
+			key = ch
+			m.nzbContentHash.Delete(infohash)
+		}
+	}
+	m.nzbFailCache.Record(key, reason)
+}
+
 // AddNewNZB processes an NZB file and stores it as a storage.Entry
 func (m *Manager) AddNewNZB(ctx context.Context, req *ImportRequest) (string, error) {
 	if m.usenet == nil {
@@ -48,21 +65,13 @@ func (m *Manager) AddNewNZB(ctx context.Context, req *ImportRequest) (string, er
 		return "", fmt.Errorf("usenet process failed: %w", err)
 	}
 
-	// Also refuse if THIS release previously failed at download/process time.
-	// Dead articles are only discovered when we try to fetch them (after a
-	// successful parse), so those failures are cached by infohash — the
-	// content-hash check above cannot catch them. Without this, a re-grabbed
-	// release with dead articles re-parses fine and re-fetches the dead
-	// segments on every single attempt (top production error).
-	if m.nzbFailCache != nil {
-		if reason, hit := m.nzbFailCache.Lookup(meta.ID); hit {
-			m.logger.Info().
-				Str("name", req.Name).
-				Str("infohash", meta.ID).
-				Str("cached_reason", reason).
-				Msg("NZB previously failed at download time — refusing without re-fetch")
-			return "", fmt.Errorf("nzb previously failed: %s", reason)
-		}
+	// Bridge this parse's random meta.ID to the stable content hash, so a
+	// download-time failure (dead articles, only discovered when fetching) can
+	// be recorded under the content hash that the lookup at the top of this
+	// function matches on a re-grab. meta.ID is a fresh UUID per parse, so it
+	// cannot be used as the dedup key directly.
+	if m.nzbContentHash != nil {
+		m.nzbContentHash.Store(meta.ID, contentHash)
 	}
 
 	// Create storage.Entry
@@ -155,11 +164,11 @@ func (m *Manager) processNewNzb(entry *storage.Entry, metadata *storage.NZB, gro
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return fmt.Errorf("usenet processing timed out after %s: %w", m.usenetTimeout, err)
 		}
-		if m.nzbFailCache != nil && isPermanentNZBFailure(err) {
-			// Cache by infohash since we no longer hold the raw content here.
-			// Same NZB submitted again will be hashed at AddNewNZB time and
-			// look up against THIS infohash entry too (added below).
-			m.nzbFailCache.Record(metadata.ID, err.Error())
+		if isPermanentNZBFailure(err) {
+			// Record under the stable content hash (meta.ID is a random UUID per
+			// parse and would never match a re-grab); AddNewNZB's content-hash
+			// lookup then short-circuits the re-grab.
+			m.recordNZBContentFailure(metadata.ID, err.Error())
 		}
 		return fmt.Errorf("failed to process nzb: %w", err)
 	}

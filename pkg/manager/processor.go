@@ -293,11 +293,11 @@ func (m *Manager) processAction(entry *storage.Entry) {
 	}
 	err := m.downloader.download(entry)
 	if err != nil {
-		// Cache permanent NZB download failures (dead articles) by infohash so
-		// a re-grab of the same release is refused up-front in AddNewNZB rather
-		// than re-fetching dead segments on every attempt.
-		if m.nzbFailCache != nil && entry.IsNZB() && isPermanentNZBFailure(err) {
-			m.nzbFailCache.Record(entry.InfoHash, err.Error())
+		// Record permanent NZB download failures (dead articles) under the
+		// stable content hash so a re-grab is refused up-front in AddNewNZB
+		// instead of re-fetching dead segments every time.
+		if entry.IsNZB() && isPermanentNZBFailure(err) {
+			m.recordNZBContentFailure(entry.InfoHash, err.Error())
 		}
 		m.logger.Error().
 			Err(err).

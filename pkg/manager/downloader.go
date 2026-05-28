@@ -3,9 +3,9 @@ package manager
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -130,6 +130,10 @@ func (d *Downloader) process(entry *storage.Entry, mountPath string) error {
 }
 
 func (d *Downloader) completeEntry(entry *storage.Entry) {
+	// Done with the NZB content-hash bridge entry on success.
+	if d.manager.nzbContentHash != nil {
+		d.manager.nzbContentHash.Delete(entry.InfoHash)
+	}
 	d.markAsCompleted(entry)
 	d.notifyCompleted(entry)
 	d.triggerArrRefresh(entry)
