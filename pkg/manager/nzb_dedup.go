@@ -110,6 +110,7 @@ func isPermanentNZBFailure(err error) bool {
 	msg := strings.ToLower(err.Error())
 	for _, pattern := range []string{
 		"no valid files found",
+		"no valid file groups found", // parser.go:148 uses "groups" variant
 		"no such article",      // NNTP code 430
 		"article_not_found",
 		"invalid nzb content",
