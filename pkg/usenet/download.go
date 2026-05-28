@@ -179,7 +179,7 @@ func (u *Usenet) Download(ctx context.Context, nzoID, filename string, writer io
 					}
 					data = data[seg.SegmentDataStart:]
 				}
-				if int64(len(data)) > seg.Bytes {
+				if seg.Bytes > 0 && int64(len(data)) > seg.Bytes {
 					data = data[:seg.Bytes]
 				}
 				resultChan <- segmentResult{index: segIdx, data: data}
