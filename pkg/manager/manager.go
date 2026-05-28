@@ -621,6 +621,32 @@ func (m *Manager) DeleteEntry(infohash string, removePlacements bool) error {
 }
 
 // markHashDeleted records an infohash in the short-lived tombstone set.
+// tombstoneTTL is how long a delete-tombstone suppresses re-creation of a hash
+// (issue #236 — debrid delete propagation lag). Shared by isRecentlyDeleted
+// (lazy cleanup on lookup) and maintenanceSweep (periodic cleanup).
+const tombstoneTTL = 5 * time.Minute
+
+// maintenanceSweep performs periodic memory hygiene: it drops expired
+// fail-cache entries and delete-tombstones that would otherwise linger. The
+// fail-caches are already capacity-bounded; this just releases memory between
+// cap-evictions and prevents tombstones for never-revisited hashes from
+// accumulating over long uptimes. Scheduled every 5m on the gocron scheduler.
+func (m *Manager) maintenanceSweep() {
+	if m.nzbFailCache != nil {
+		m.nzbFailCache.Cleanup()
+	}
+	if m.torrentFailCache != nil {
+		m.torrentFailCache.Cleanup()
+	}
+	now := time.Now()
+	m.recentlyDeleted.Range(func(hash string, at time.Time) bool {
+		if now.Sub(at) > tombstoneTTL {
+			m.recentlyDeleted.Delete(hash)
+		}
+		return true
+	})
+}
+
 // The tombstone suppresses re-creation during the next refresh cycle for
 // providers (e.g. RealDebrid) whose delete propagation lags behind the
 // next polling window (issue #236).
@@ -631,7 +657,6 @@ func (m *Manager) markHashDeleted(infohash string) {
 // isRecentlyDeleted returns true if the hash was deleted within the last 5
 // minutes and cleans up the tombstone once it has expired.
 func (m *Manager) isRecentlyDeleted(infohash string) bool {
-	const tombstoneTTL = 5 * time.Minute
 	deleted, ok := m.recentlyDeleted.Load(infohash)
 	if !ok {
 		return false

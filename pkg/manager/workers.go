@@ -89,6 +89,19 @@ func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
 		}
 	}
 
+	// Maintenance sweep: fail-cache + tombstone memory hygiene (every 5m).
+	if jd, err := utils.ConvertToJobDef("5m"); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to convert maintenance interval to job definition")
+	} else {
+		if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
+			m.maintenanceSweep()
+		}), gocron.WithContext(ctx)); err != nil {
+			m.logger.Error().Err(err).Msg("Failed to create maintenance sweep job")
+		} else {
+			m.logger.Debug().Msgf("Maintenance sweep job scheduled for every %s", "5m")
+		}
+	}
+
 	// NZB refresh job for pending archives (every 5 minutes)
 	if m.usenet != nil {
 		if jd, err := utils.ConvertToJobDef("10m"); err != nil {
