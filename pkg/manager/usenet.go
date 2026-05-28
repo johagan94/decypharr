@@ -48,6 +48,23 @@ func (m *Manager) AddNewNZB(ctx context.Context, req *ImportRequest) (string, er
 		return "", fmt.Errorf("usenet process failed: %w", err)
 	}
 
+	// Also refuse if THIS release previously failed at download/process time.
+	// Dead articles are only discovered when we try to fetch them (after a
+	// successful parse), so those failures are cached by infohash — the
+	// content-hash check above cannot catch them. Without this, a re-grabbed
+	// release with dead articles re-parses fine and re-fetches the dead
+	// segments on every single attempt (top production error).
+	if m.nzbFailCache != nil {
+		if reason, hit := m.nzbFailCache.Lookup(meta.ID); hit {
+			m.logger.Info().
+				Str("name", req.Name).
+				Str("infohash", meta.ID).
+				Str("cached_reason", reason).
+				Msg("NZB previously failed at download time — refusing without re-fetch")
+			return "", fmt.Errorf("nzb previously failed: %s", reason)
+		}
+	}
+
 	// Create storage.Entry
 	entry := &storage.Entry{
 		InfoHash:         meta.ID,

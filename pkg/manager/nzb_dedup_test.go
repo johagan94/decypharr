@@ -21,6 +21,8 @@ func TestIsPermanentNZBFailure(t *testing.T) {
 		{"file_groups_variant", errors.New("usenet process failed: no valid file groups found in NZB"), true},
 		{"no_valid_files", errors.New("no valid files found in NZB"), true},
 		{"no_such_article", errors.New("NNTP ARTICLE_NOT_FOUND (code 430): No such article"), true},
+		// Exact production error from the download path (segment fetch).
+		{"download_dead_segment", errors.New("NZB download failed: failed to download foo.flac: segment 9: NNTP ARTICLE_NOT_FOUND (code 430): segment abc@def: No such article"), true},
 		{"empty", errors.New("nzb content is empty"), true},
 		{"transient_timeout", errors.New("usenet processing timed out after 5m"), false},
 		{"random", errors.New("some other error"), false},
