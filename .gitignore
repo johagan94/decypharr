@@ -21,3 +21,6 @@ node_modules/
 .stignore
 .stfolder/**test-config/config.json
 test-data/
+
+# Fork build artifact
+decypharr_fork
