@@ -92,9 +92,10 @@ type Manager struct {
 	recentlyDeleted *xsync.Map[string, time.Time]
 
 	// NZB processing worker pool (unbounded queue)
-	nzbQueue      *nzbJobQueue
-	nzbFailCache  *nzbFailCache
-	nzbWorkerStop chan struct{} // Signal to stop workers
+	nzbQueue         *nzbJobQueue
+	nzbFailCache     *failCache
+	torrentFailCache *failCache
+	nzbWorkerStop    chan struct{} // Signal to stop workers
 
 	// Notifications service
 	Notifications *notifications.Service
@@ -267,7 +268,10 @@ func (m *Manager) initUsenet() {
 	// Cache NZBs that failed with non-transient errors so Lidarr retry
 	// loops don't make us re-fetch dead articles over and over. 24h TTL
 	// gives transient issues a fair chance to recover overnight.
-	m.nzbFailCache = newNzbFailCache(24*time.Hour, 1000)
+	m.nzbFailCache = newFailCache(24*time.Hour, 1000)
+	// Torrent submission cooldown: short TTL so a hash that becomes cached
+	// later can be retried, but rapid re-grabs don't re-hit debrid (#308).
+	m.torrentFailCache = newFailCache(30*time.Minute, 2000)
 	m.nzbWorkerStop = make(chan struct{})
 
 	// Start worker goroutines

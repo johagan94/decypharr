@@ -34,6 +34,21 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 	}
 	defer m.submitInFlight.Delete(importReq.Magnet.InfoHash)
 
+	// Cooldown: if this hash recently failed submission to ALL debrid
+	// providers, don't re-hit the debrid API. Rapid arr re-grabs of an
+	// uncached/blocked release otherwise trigger TorBox's account-level
+	// cooldown (issue #308). Warden's defence loop owns eventual blocklisting.
+	if m.torrentFailCache != nil {
+		if reason, hit := m.torrentFailCache.Lookup(importReq.Magnet.InfoHash); hit {
+			m.logger.Info().
+				Str("hash", importReq.Magnet.InfoHash).
+				Str("name", importReq.Magnet.Name).
+				Str("cached_reason", reason).
+				Msg("Torrent submission on cooldown after recent failure — refusing without re-submit")
+			return fmt.Errorf("torrent submission on cooldown: %s", reason)
+		}
+	}
+
 	debridTorrent, err = m.SendToDebrid(ctx, importReq)
 	if err != nil {
 		// Check if too many active downloads
@@ -44,6 +59,12 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 				return err
 			}
 			return nil
+		}
+		// Record non-transient failures so re-grabs of the same hash stay off
+		// the debrid API during the cooldown window. Transient blips are not
+		// cached so they can retry promptly.
+		if m.torrentFailCache != nil && !isTransientSubmitError(err) {
+			m.torrentFailCache.Record(importReq.Magnet.InfoHash, err.Error())
 		}
 		return fmt.Errorf("failed to submit torrent to debrid: %w", err)
 	}
