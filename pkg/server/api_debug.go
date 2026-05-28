@@ -10,6 +10,12 @@ import (
 	"github.com/sirrobot01/decypharr/pkg/manager"
 )
 
+// handleDebugState returns a read-only snapshot of internal runtime state
+// (caches, queues, memory) for soak monitoring without log-grepping.
+func (s *Server) handleDebugState(w http.ResponseWriter, r *http.Request) {
+	utils.JSONResponse(w, s.manager.DebugState(), http.StatusOK)
+}
+
 func (s *Server) handleIngests(w http.ResponseWriter, r *http.Request) {
 	ingests, err := s.manager.GetIngests()
 	if err != nil {

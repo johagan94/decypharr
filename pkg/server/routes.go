@@ -100,6 +100,10 @@ func (s *Server) WebRoutes() http.Handler {
 			// Decypharr without a FUSE mount on the Jellyfin side.
 			r.Post("/strm/generate", s.handleSTRMGenerate)
 
+			// Debug — read-only runtime snapshot (caches, queues, memory) for
+			// soak monitoring. See pkg/manager/debug.go.
+			r.Get("/debug/state", s.handleDebugState)
+
 			// Config/Auth
 			r.Get("/config", s.handleGetConfig)
 			r.Post("/config", s.handleUpdateConfig)
