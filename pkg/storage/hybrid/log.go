@@ -3,9 +3,11 @@ package hybrid
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"sync"
+
+	"github.com/rs/zerolog"
+	"github.com/sirrobot01/decypharr/internal/logger"
 )
 
 // Log format:
@@ -60,6 +62,7 @@ type appendLog struct {
 	path     string
 	writePos int64
 	version  uint32 // File format version (for backward compatibility)
+	logger   zerolog.Logger
 }
 
 // openAppendLog opens an existing log or creates a new one
@@ -79,6 +82,7 @@ func openAppendLog(path string) (*appendLog, error) {
 		file:    file,
 		path:    path,
 		version: logVersion, // Default to current version for new files
+		logger:  logger.New("hybrid-log"),
 	}
 
 	if info.Size() == 0 {
@@ -113,6 +117,7 @@ func createAppendLog(path string) (*appendLog, error) {
 		file:    file,
 		path:    path,
 		version: logVersion,
+		logger:  logger.New("hybrid-log"),
 	}
 
 	if err := log.writeHeader(); err != nil {
@@ -261,7 +266,13 @@ func (l *appendLog) ReadAt(offset int64, size int32) ([]byte, error) {
 	return buf, nil
 }
 
-// Iterate scans the log and calls fn for each record
+// Iterate scans the log and calls fn for each record.
+//
+// Recovery is torn-write-safe: if a record cannot be read (a partial write left
+// by a crash, or an implausible length field), the position is treated as the
+// end of the valid log. The trailing garbage is truncated and iteration stops,
+// rather than failing recovery and bricking the whole store. This mirrors the
+// standard recovery behaviour of Bitcask/LevelDB-style append logs.
 func (l *appendLog) Iterate(fn func(*LogRecord) error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -272,10 +283,18 @@ func (l *appendLog) Iterate(fn func(*LogRecord) error) error {
 	for pos < fileSize {
 		record, nextPos, err := l.readRecordAt(pos)
 		if err != nil {
-			if err == io.EOF {
-				break
+			// Torn/corrupt tail: drop everything from pos onward so the store
+			// opens cleanly with all records that were fully written.
+			if truncErr := l.file.Truncate(pos); truncErr != nil {
+				l.logger.Error().Err(truncErr).Int64("pos", pos).
+					Msg("hybrid log: failed to truncate torn tail during recovery")
+			} else {
+				l.writePos = pos
 			}
-			return err
+			l.logger.Warn().Err(err).
+				Int64("truncated_at", pos).Int64("prev_size", fileSize).
+				Msg("hybrid log: torn/corrupt tail on recovery; truncated to last valid record")
+			break
 		}
 
 		if err := fn(record); err != nil {

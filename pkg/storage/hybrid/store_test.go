@@ -319,3 +319,89 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Fatalf("Len = %d, want %d", s.Len(), workers*perWorker)
 	}
 }
+
+// TestRecoveryTruncatesTornTail proves a torn/partial final write does NOT
+// brick the store: recovery truncates the garbage and recovers all complete
+// records, and the store stays writable afterwards.
+func TestRecoveryTruncatesTornTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "torn.db")
+	cfg := Config{DataPath: path, CacheSize: 8, SyncInterval: 0}
+
+	s1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New#1: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		mustPut(t, s1, fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i), nil)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Simulate a torn final write: a record header claiming 1000 key bytes,
+	// but only a few bytes actually follow (crash mid-append).
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatalf("open for corruption: %v", err)
+	}
+	if _, err := f.Write([]byte{0xE8, 0x03, 0x00, 0x00, 0x01, 0x02, 0x03}); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close corrupt file: %v", err)
+	}
+
+	// Reopen: must recover, not brick.
+	s2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New#2 bricked on torn tail (should have recovered): %v", err)
+	}
+	defer s2.Close()
+
+	if s2.Len() != 5 {
+		t.Fatalf("Len after torn-tail recovery = %d, want 5", s2.Len())
+	}
+	for i := 0; i < 5; i++ {
+		mustGet(t, s2, fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i))
+	}
+	// Writable after recovery (writePos was repaired by truncation).
+	mustPut(t, s2, "after", "ok", nil)
+	mustGet(t, s2, "after", "ok")
+}
+
+// TestRecoveryTruncatesPartialHeader covers the other torn case: a crash that
+// left only a couple of bytes of the next record's length prefix.
+func TestRecoveryTruncatesPartialHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial.db")
+	cfg := Config{DataPath: path, CacheSize: 8, SyncInterval: 0}
+
+	s1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New#1: %v", err)
+	}
+	mustPut(t, s1, "only", "value", nil)
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatalf("open for corruption: %v", err)
+	}
+	if _, err := f.Write([]byte{0x05, 0x00}); err != nil { // 2 of 4 length bytes
+		t.Fatalf("write partial header: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	s2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New#2 bricked on partial header: %v", err)
+	}
+	defer s2.Close()
+	if s2.Len() != 1 {
+		t.Fatalf("Len after partial-header recovery = %d, want 1", s2.Len())
+	}
+	mustGet(t, s2, "only", "value")
+}
