@@ -53,10 +53,10 @@ var fastClient = &http.Client{
 		ExpectContinueTimeout: 1 * time.Second,
 		// Don't keep idle connections around — most arrs are pinged once per
 		// cycle and would just consume a slot for 30 minutes.
-		MaxIdleConns:        4,
-		IdleConnTimeout:     30 * time.Second,
-		DisableKeepAlives:   false,
-		MaxConnsPerHost:     2,
+		MaxIdleConns:      4,
+		IdleConnTimeout:   30 * time.Second,
+		DisableKeepAlives: false,
+		MaxConnsPerHost:   2,
 	},
 }
 
@@ -64,13 +64,7 @@ var fastClient = &http.Client{
 // host. After N failures we stop trying that arr until the next process
 // restart, so a permanently-down arr doesn't waste 3 seconds × every cycle.
 // Cleared on first success.
-var (
-	arrFailMu     sync.Mutex
-	arrFails      = map[string]int{}
-	arrUnreached  = map[string]bool{}
-	maxArrFails   = 3 // 3 strikes and we skip that host
-)
-
+// arrKey identifies an arr by host for health tracking.
 func arrKey(a *arr.Arr) string {
 	if a == nil {
 		return ""
@@ -78,36 +72,99 @@ func arrKey(a *arr.Arr) string {
 	return a.Host
 }
 
-func isArrAvailable(a *arr.Arr) bool {
-	arrFailMu.Lock()
-	defer arrFailMu.Unlock()
-	return !arrUnreached[arrKey(a)]
+// arrHealthTracker tracks per-arr reachability so the defence loop doesn't
+// hammer an unreachable arr every cycle, while still recovering automatically
+// once it comes back. Unlike a permanent skip, a failing arr is placed on a
+// cooldown with exponential backoff; when the cooldown lapses it is re-probed
+// on the next cycle, and a single success clears the penalty.
+//
+// All state is instance-scoped (no package globals) and guarded by mu. The
+// clock is injectable so the backoff is deterministically testable.
+type arrHealthTracker struct {
+	mu        sync.Mutex
+	fails     map[string]int
+	skipUntil map[string]time.Time
+
+	threshold    int           // consecutive failures before the first cooldown
+	baseCooldown time.Duration // cooldown applied at the threshold
+	maxCooldown  time.Duration // cap for the exponential backoff
+	now          func() time.Time
 }
 
-func recordArrSuccess(a *arr.Arr) {
-	arrFailMu.Lock()
-	defer arrFailMu.Unlock()
-	k := arrKey(a)
-	delete(arrFails, k)
-	delete(arrUnreached, k)
+func newArrHealthTracker() *arrHealthTracker {
+	return &arrHealthTracker{
+		fails:        make(map[string]int),
+		skipUntil:    make(map[string]time.Time),
+		threshold:    3,
+		baseCooldown: 15 * time.Minute,
+		maxCooldown:  time.Hour,
+		now:          time.Now,
+	}
 }
 
-// recordArrFailure increments the per-arr failure counter and returns true
-// if this is the failure that crossed the threshold (so the caller can log
-// a one-time "giving up on this arr" notice).
-func recordArrFailure(a *arr.Arr) bool {
-	arrFailMu.Lock()
-	defer arrFailMu.Unlock()
+// available reports whether the arr should be contacted this cycle. An arr on
+// cooldown becomes available again once the cooldown lapses (a re-probe). An
+// empty key (nil/unconfigured arr) is never available.
+func (t *arrHealthTracker) available(a *arr.Arr) bool {
 	k := arrKey(a)
-	if k == "" || arrUnreached[k] {
+	if k == "" {
 		return false
 	}
-	arrFails[k]++
-	if arrFails[k] >= maxArrFails {
-		arrUnreached[k] = true
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	until, ok := t.skipUntil[k]
+	if !ok {
 		return true
 	}
-	return false
+	return !t.now().Before(until)
+}
+
+// recordSuccess clears any accumulated penalty for the arr.
+func (t *arrHealthTracker) recordSuccess(a *arr.Arr) {
+	k := arrKey(a)
+	if k == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.fails, k)
+	delete(t.skipUntil, k)
+}
+
+// recordFailure registers a failed contact and returns true only when the arr
+// newly enters a cooldown window, so the caller can log it once rather than
+// every cycle. The cooldown grows exponentially (baseCooldown << extra) up to
+// maxCooldown for an arr that stays down.
+func (t *arrHealthTracker) recordFailure(a *arr.Arr) bool {
+	k := arrKey(a)
+	if k == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := t.now()
+	alreadyCoolingDown := false
+	if until, ok := t.skipUntil[k]; ok && now.Before(until) {
+		alreadyCoolingDown = true
+	}
+
+	t.fails[k]++
+	if t.fails[k] < t.threshold {
+		return false
+	}
+
+	cooldown := t.baseCooldown
+	for i := 0; i < t.fails[k]-t.threshold && cooldown < t.maxCooldown; i++ {
+		cooldown *= 2
+	}
+	if cooldown > t.maxCooldown {
+		cooldown = t.maxCooldown
+	}
+	t.skipUntil[k] = now.Add(cooldown)
+
+	// Log once when entering a fresh cooldown window.
+	return !alreadyCoolingDown
 }
 
 // arrFastRequest issues an HTTP request to an arr using fastClient.
