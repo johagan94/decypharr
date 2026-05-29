@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>decypharr</Name>
+  <Repository>ghcr.io/johagan94/decypharr:latest</Repository>
+  <Registry>https://hub.docker.com/r/cy01/blackhole/</Registry>
+  <Network>homelab</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/sirrobot01/decypharr/issues</Support>
+  <Project>https://sirrobot01.github.io/decypharr/</Project>
+  <ReadMe>https://github.com/sirrobot01/decypharr/blob/main/README.md</ReadMe>
+  <Overview>Decypharr is a self-hosted, open-source download client that integrates with multiple Debrid services. It provides a user-friendly interface for managing files and supports popular media management applications like Sonarr and Radarr.</Overview>
+  <Category>Downloaders: MediaApp:Video</Category>
+  <WebUI>http://[IP]:[PORT:8282]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/mash2k3/unraid-templates/main/decypharr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/mash2k3/unraid-templates/main/icons/decypharr.png</Icon>
+  <ExtraParams> --mount type=bind,source=/mnt/user/data,target=/data,bind-propagation=rshared --device /dev/fuse:/dev/fuse:rwm  --cap-add SYS_ADMIN  --security-opt apparmor:unconfined</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>1780068750</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="port" Target="8282" Default="" Mode="tcp" Description="" Type="Port" Display="always" Required="true" Mask="false">8282</Config>
+  <Config Name="config" Target="/app" Default="" Mode="rw" Description="" Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/decypharr</Config>
+  <Config Name="TailScale Fallback State Directory" Target="CA_TS_FALLBACK_DIR" Default="/app" Mode="{3}" Description="Fallback container directory for tailscale state information - Added By Community Applications" Type="Variable" Display="advanced" Required="{7}" Mask="{8}">/app</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Run-as user ID. Set to 99 (nobody) to match the *arr containers so they can delete decypharr-created download folders." Type="Variable" Display="always" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Run-as group ID. Set to 100 (users) to match the *arr containers." Type="Variable" Display="always" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="Umask for created files/folders. 002 = group-writable, matches config.json umask." Type="Variable" Display="always" Required="false" Mask="false">002</Config>
+  <TailscaleStateDir/>
+</Container>
