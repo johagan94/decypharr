@@ -1037,6 +1037,15 @@ class ConfigManager {
                                 <span class=" text-sm">Download Uncached</span>
                             </label>
                         </div>
+
+                        <div>
+                            <label class="label cursor-pointer justify-start gap-2">
+                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary"
+                                       name="arr[${index}].force_download" id="arr[${index}].force_download">
+                                <span class=" text-sm">Force Local Download</span>
+                                <div class="label-text-alt">Always download to disk instead of a DFS symlink (e.g. Lidarr, so metadata/tags can be written)</div>
+                            </label>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1322,6 +1331,7 @@ class ConfigManager {
             const cleanupInput = getField('cleanup');
             const skipRepairInput = getField('skip_repair');
             const downloadUncachedInput = getField('download_uncached');
+            const forceDownloadInput = getField('force_download');
             const selectedDebridInput = getField('selected_debrid');
             const sourceInput = getField('source');
 
@@ -1336,6 +1346,7 @@ class ConfigManager {
                 cleanup: cleanupInput.checked,
                 skip_repair: skipRepairInput.checked,
                 download_uncached: downloadUncachedInput.checked,
+                force_download: forceDownloadInput ? forceDownloadInput.checked : false,
                 selected_debrid: selectedDebridInput.value,
                 source: sourceInput.value
             };
