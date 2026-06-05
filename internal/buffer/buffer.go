@@ -350,7 +350,7 @@ func (b *Buffer) writeRegion(blockOff int64, lo, hi int, src []byte) error {
 	// serialize against every concurrent reader.
 	b.mu.RLock()
 	_, resident := b.blocks[blockOff]
-	canCache := b.bytesInRAM+blockSize <= b.maxBytes
+	canCache := b.bytesInRAM+blockSize <= b.maxBytes && globalRAMHasRoom()
 	b.mu.RUnlock()
 
 	// Resident block, or room to cache one → cached path. Needs the
@@ -707,6 +707,11 @@ func (b *Buffer) Close() error {
 			_ = b.flushBlockLocked(blk)
 		}
 	}
+	// Close drops still-resident blocks on the floor (see above) rather than
+	// routing each through dropBlockLocked, so release this buffer's resident
+	// bytes from the global RAM accounting in one shot to avoid a slow leak.
+	globalRAMSub(b.bytesInRAM)
+	b.bytesInRAM = 0
 	b.mu.Unlock()
 
 	// Release the kernel's page-cache footprint for this file before
@@ -819,6 +824,12 @@ func (b *Buffer) promoteOne(blockOff int64) {
 		b.blockPool.Put(bufPtr)
 		return
 	}
+	// Global RAM ceiling reached — leave this block on disk. Reads still
+	// serve it from the backing file; we just don't grow RAM further.
+	if !globalRAMHasRoom() {
+		b.blockPool.Put(bufPtr)
+		return
+	}
 	// Make room — only clean evictions, never flush dirty under the
 	// promote path; that would re-introduce the under-lock-syscall cost
 	// write-through was designed to eliminate.
@@ -837,6 +848,7 @@ func (b *Buffer) promoteOne(blockOff int64) {
 	}
 	b.blocks[blockOff] = blk
 	b.bytesInRAM += int64(blockSize)
+	globalRAMAdd()
 	b.pushFrontLocked(blk)
 	// Block is now RAM-resident: fast path must be off so readers see
 	// the RAM data, not a stale pread.
@@ -932,6 +944,7 @@ func (b *Buffer) acquireBlockLocked(blockOff int64, forWrite bool) (*block, erro
 	}
 	b.blocks[blockOff] = blk
 	b.bytesInRAM += int64(blockSize)
+	globalRAMAdd()
 	b.pushFrontLocked(blk)
 	// A RAM block now exists for this offset — readers must take the
 	// locked path to see the RAM data, not pread stale disk bytes.
@@ -948,6 +961,7 @@ func (b *Buffer) dropBlockLocked(blk *block) {
 	delete(b.blocks, blk.off)
 	b.unlinkLocked(blk)
 	b.bytesInRAM -= int64(blockSize)
+	globalRAMSub(blockSize)
 	b.blockPool.Put(blk.bufPtr)
 	// No more RAM block at this offset. If the block is fully on disk,
 	// future reads can take the fast pread path; otherwise keep them on
