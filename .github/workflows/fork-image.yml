@@ -31,7 +31,10 @@ jobs:
 
       - name: Read fork version
         id: ver
-        run: echo "version=$(cat FORK_VERSION)" >> "$GITHUB_OUTPUT"
+        # Append the short SHA so /api/version stays traceable as the branch
+        # auto-rebases onto newer upstream/beta. (Used only as the binary version
+        # stamp, not as an image tag — '+' is invalid in a Docker tag.)
+        run: echo "version=$(cat FORK_VERSION)+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -55,7 +58,7 @@ jobs:
             VERSION=${{ steps.ver.outputs.version }}
             CHANNEL=fork
           tags: |
+            ${{ env.IMAGE }}:beta
             ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -1,0 +1,88 @@
+name: Auto-rebase onto upstream/beta
+
+# Keeps beta-stable current with sirrobot01/decypharr@beta by replaying the
+# fork's commits on top of the latest upstream beta — but ONLY when it applies
+# cleanly. A conflicting upstream change aborts the rebase untouched and opens
+# an issue, so the deployed branch never ends up in a half-merged state.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: auto-rebase
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout beta-stable (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: beta-stable
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream/beta
+        run: |
+          git remote add upstream https://github.com/sirrobot01/decypharr.git
+          git fetch --no-tags upstream beta
+
+      - name: Check for upstream updates
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/beta HEAD; then
+            echo "beta-stable already contains upstream/beta — nothing to do."
+            echo "have_updates=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_updates=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt clean rebase
+        id: rebase
+        if: steps.check.outputs.have_updates == 'true'
+        run: |
+          if git rebase upstream/beta; then
+            echo "Clean rebase onto upstream/beta succeeded."
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "Rebase hit conflicts — aborting, no changes pushed."
+            git rebase --abort || true
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push rebased beta-stable
+        if: steps.rebase.outputs.result == 'clean'
+        run: git push --force-with-lease origin beta-stable
+
+      - name: Trigger image rebuild
+        if: steps.rebase.outputs.result == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # GITHUB_TOKEN pushes don't trigger other workflows, so dispatch the
+        # build explicitly (workflow_dispatch IS allowed to fire from the token).
+        run: gh workflow run fork-image.yml --ref beta-stable
+
+      - name: Open an issue on conflict (deduped)
+        if: steps.rebase.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="Auto-rebase onto upstream/beta needs manual attention"
+          OPEN=$(gh issue list --state open --search "in:title $TITLE" --json number --jq 'length')
+          if [ "$OPEN" = "0" ]; then
+            gh issue create --title "$TITLE" --body "$(printf 'The scheduled rebase of `beta-stable` onto `upstream/beta` hit conflicts and was aborted (nothing was pushed; the deployed branch is unchanged).\n\nResolve it manually:\n\n```\ngit fetch upstream beta\ngit checkout beta-stable\ngit rebase upstream/beta\n# fix conflicts, then:\ngit push --force-with-lease origin beta-stable\n```\n')"
+          else
+            echo "A conflict issue is already open — not duplicating."
+          fi
