@@ -1,0 +1,9 @@
+# Thin fork image: the upstream base with our patched binary baked in, so the
+# deployment SURVIVES container recreation. Unraid template Repository should
+# point at local/decypharr:fork-<version> instead of cy01/blackhole:latest
+# (plain `docker cp` deploys are lost whenever Unraid recreates the container).
+#
+# Pin the base by digest if you want full reproducibility; :latest is used here
+# so we inherit upstream UI assets + entrypoint + healthcheck unchanged.
+FROM cy01/blackhole:latest
+COPY decypharr_fork /usr/bin/decypharr
