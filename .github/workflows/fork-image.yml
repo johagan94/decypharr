@@ -7,7 +7,7 @@ name: Build fork image (GHCR)
 on:
   push:
     branches: [main, beta-stable]
-    paths-not:
+    paths-ignore:
       - 'docs/**'
       - '**/*.md'
   workflow_dispatch:
