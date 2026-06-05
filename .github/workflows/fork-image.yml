@@ -1,0 +1,61 @@
+name: Build fork image (GHCR)
+
+# Builds the beta-based fork binary from source and pushes a durable image to
+# ghcr.io/johagan94/decypharr. The Unraid template points at :latest, so a push
+# to main (or a manual run) ships the new build.
+
+on:
+  push:
+    branches: [main, beta-stable]
+    paths-not:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: fork-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/decypharr
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read fork version
+        id: ver
+        run: echo "version=$(cat FORK_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ghcr
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            CHANNEL=fork
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

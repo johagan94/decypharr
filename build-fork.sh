@@ -11,7 +11,7 @@ docker run --rm \
   -v "$(pwd)":/app -w /app \
   -v decypharr-gomod:/go/pkg/mod \
   -v decypharr-gobuild:/root/.cache/go-build \
-  golang:1.25-alpine sh -c "
+  golang:1.26-alpine sh -c "
     apk add --no-cache gcc g++ musl-dev fuse-dev | tail -1 &&
     CGO_ENABLED=1 go build -trimpath -ldflags=\"${LDFLAGS}\" -o /app/decypharr_fork ."
 echo "==> Built ./decypharr_fork  (${VERSION}-fork)"
