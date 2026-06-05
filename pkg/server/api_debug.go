@@ -57,3 +57,9 @@ func (s *Server) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
 	result := s.manager.SpeedTest(r.Context(), req)
 	utils.JSONResponse(w, result, http.StatusOK)
 }
+
+// handleDebugState returns a lightweight runtime/memory snapshot for soak
+// monitoring (goroutines, heap, GC, global buffer RAM). See Manager.DebugState.
+func (s *Server) handleDebugState(w http.ResponseWriter, r *http.Request) {
+	utils.JSONResponse(w, s.manager.DebugState(), http.StatusOK)
+}

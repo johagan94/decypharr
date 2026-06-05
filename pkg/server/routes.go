@@ -91,6 +91,9 @@ func (s *Server) WebRoutes() http.Handler {
 			r.Post("/config", s.handleUpdateConfig)
 			r.Post("/refresh-token", s.handleRefreshAPIToken)
 			r.Post("/update-auth", s.handleUpdateAuth)
+
+			// Diagnostics (fork): lightweight runtime/memory snapshot for soak monitoring
+			r.Get("/debug/state", s.handleDebugState)
 		})
 	})
 
