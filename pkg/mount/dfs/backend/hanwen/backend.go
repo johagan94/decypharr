@@ -4,11 +4,14 @@ package hanwen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -73,8 +76,25 @@ func (b *Backend) Mount(ctx context.Context) error {
 	}
 
 	_ = os.MkdirAll(b.config.MountPath, 0755)
-	// Try to unmount if already mounted
-	b.forceUnmount(ctx)
+
+	// Clear any stale mount left behind by a previous or still-exiting process
+	// before mounting. A force-unmount can lose a race with the old process (the
+	// mount isn't freed until it fully exits), so verify with isMounted and retry
+	// a few times. fs.Mount below is still bounded by DaemonTimeout, so a mount
+	// point that stays busy fails fast with a clear error instead of hanging.
+	for attempt := 0; attempt < 6; attempt++ {
+		if !isMounted(b.config.MountPath) {
+			break
+		}
+		if attempt > 0 {
+			b.logger.Warn().
+				Int("attempt", attempt).
+				Str("mount_path", b.config.MountPath).
+				Msg("Mount point still busy from a previous run; clearing before remount")
+			time.Sleep(time.Second)
+		}
+		b.forceUnmount(ctx)
+	}
 
 	mountOpt := fuse.MountOptions{
 		FsName:               "decypharr",
@@ -83,7 +103,7 @@ func (b *Backend) Mount(ctx context.Context) error {
 		DisableXAttrs:        true,
 		IgnoreSecurityLabels: true,
 		MaxWrite:             1024 * 1024,
-		AllowOther: true,
+		AllowOther:           true,
 	}
 
 	var opt []string
@@ -179,8 +199,10 @@ func (b *Backend) Mount(ctx context.Context) error {
 			_ = server.Unmount()
 			time.Sleep(1 * time.Second)
 
-			// Check if still mounted
-			if _, err := os.Stat(b.config.MountPath); err == nil {
+			// Check if still mounted. os.Stat alone is wrong here — the mount-point
+			// directory exists whether or not it's mounted — so use isMounted,
+			// which also catches a stale/half-detached FUSE mount (ENOTCONN).
+			if isMounted(b.config.MountPath) {
 				b.logger.Warn().Msg("FUSE filesystem still mounted, attempting force unmount")
 				b.forceUnmount(ctx)
 			}
@@ -252,6 +274,9 @@ func (b *Backend) Refresh(dir string) {
 
 // forceUnmount attempts to force unmount a path using system commands
 func (b *Backend) forceUnmount(ctx context.Context) {
+	if !isMounted(b.config.MountPath) {
+		return
+	}
 	methods := [][]string{
 		{"umount", b.config.MountPath},
 		{"umount", "-l", b.config.MountPath}, // lazy unmount
@@ -263,7 +288,11 @@ func (b *Backend) forceUnmount(ctx context.Context) {
 	defer cancel()
 
 	for _, method := range methods {
-		if err := b.tryUnmountCommand(ctx, method...); err == nil {
+		// Ignore the command's exit code and verify the actual mount state
+		// instead: `umount -l` returns 0 but detaches lazily, so trusting the
+		// exit code would wrongly declare success while the mount lingers.
+		_ = b.tryUnmountCommand(ctx, method...)
+		if !isMounted(b.config.MountPath) {
 			return
 		}
 		if ctx.Err() != nil {
@@ -271,6 +300,22 @@ func (b *Backend) forceUnmount(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// isMounted reports whether path is currently a mount point. It compares the
+// device of path against its parent (a differing device means path is a mount
+// point) and treats ENOTCONN — a stale/half-detached FUSE mount left by a
+// crashed or still-exiting previous process — as still-mounted so it is cleared.
+func isMounted(path string) bool {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return errors.Is(err, syscall.ENOTCONN)
+	}
+	var parent syscall.Stat_t
+	if err := syscall.Stat(filepath.Dir(path), &parent); err != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
 }
 
 // tryUnmountCommand tries to run an unmount command

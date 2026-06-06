@@ -19,6 +19,13 @@ const (
 	MaxNZBPreCacheFiles = 5
 	CacheWarmTimeout    = 60 * time.Second
 
+	// verifyHeadAttempts / verifyHeadRetryDelay bound the pre-import head-read
+	// check. Download-on-demand debrid content can be briefly unreadable right
+	// after the mount file appears (link still being prepared), so retry a few
+	// times before treating the download as failed.
+	verifyHeadAttempts   = 4
+	verifyHeadRetryDelay = 4 * time.Second
+
 	// Container metadata lives at the head (streamable MP4 moov, EBML header)
 	// or the tail (non-streamable MP4 moov, MKV cues/seek index), so warming
 	// head+tail covers what a downstream ffprobe/import scan will seek to.
@@ -107,11 +114,25 @@ func (m *Manager) VerifyMediaHeads(filePaths []string) error {
 		if !utils.IsMediaFile(fp) {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), CacheWarmTimeout)
-		err := m.verifyHeadReadable(ctx, fp)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("unreadable content in %s: %w", fp, err)
+		// Retry with a short grace window before giving up: download-on-demand
+		// debrid content can be momentarily unreadable right after the mount file
+		// appears, so a single read can EIO on a file that becomes readable a few
+		// seconds later. Only content that stays unreadable across every attempt
+		// is treated as a failed download.
+		var lastErr error
+		for attempt := 0; attempt < verifyHeadAttempts; attempt++ {
+			if attempt > 0 {
+				time.Sleep(verifyHeadRetryDelay)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), CacheWarmTimeout)
+			lastErr = m.verifyHeadReadable(ctx, fp)
+			cancel()
+			if lastErr == nil {
+				break
+			}
+		}
+		if lastErr != nil {
+			return fmt.Errorf("unreadable content in %s: %w", fp, lastErr)
 		}
 	}
 	return nil
