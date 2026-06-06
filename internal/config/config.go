@@ -164,10 +164,16 @@ type Config struct {
 	CallbackURL string `json:"callback_url,omitempty"`
 
 	// Manager settings
-	DownloadFolder        string                   `json:"download_folder,omitempty"`
-	RefreshInterval       string                   `json:"refresh_interval,omitempty"`
-	MaxDownloads          int                      `json:"max_downloads,omitempty"`
-	SkipPreCache          bool                     `json:"skip_pre_cache,omitempty"`
+	DownloadFolder  string `json:"download_folder,omitempty"`
+	RefreshInterval string `json:"refresh_interval,omitempty"`
+	MaxDownloads    int    `json:"max_downloads,omitempty"`
+	SkipPreCache    bool   `json:"skip_pre_cache,omitempty"`
+	// VerifyImport, when true, reads each media file's head through the mount
+	// right before symlinking and fails the download if the content is not
+	// actually readable (missing usenet segment / dead or expired debrid link),
+	// instead of handing the *arr a file that ffprobe will choke on. See
+	// (*Downloader).processSymlink and (*Manager).VerifyMediaHeads.
+	VerifyImport          bool                     `json:"verify_import,omitempty"`
 	SkipMultiSeason       bool                     `json:"skip_multi_season,omitempty"`
 	AlwaysRmTrackerUrls   bool                     `json:"always_rm_tracker_urls,omitempty"`
 	Categories            []string                 `json:"categories,omitempty"`

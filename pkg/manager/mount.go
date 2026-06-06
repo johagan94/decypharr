@@ -2,9 +2,12 @@ package manager
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sirrobot01/decypharr/internal/utils"
@@ -91,6 +94,70 @@ func (m *Manager) WarmFileCache(filePaths []string) error {
 
 	p.Wait()
 	return nil
+}
+
+// VerifyMediaHeads reads the head of each media file through the mount and
+// returns an error if a file's head is definitively unreadable — a missing
+// usenet first segment or a dead/expired debrid link. Transient failures
+// (timeouts/cancellation) are treated as non-fatal so a momentary provider
+// hiccup does not fail an otherwise-good import. This exercises the same read
+// path a downstream ffprobe uses, so passing here means ffprobe gets real bytes.
+func (m *Manager) VerifyMediaHeads(filePaths []string) error {
+	for _, fp := range filePaths {
+		if !utils.IsMediaFile(fp) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), CacheWarmTimeout)
+		err := m.verifyHeadReadable(ctx, fp)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("unreadable content in %s: %w", fp, err)
+		}
+	}
+	return nil
+}
+
+// verifyHeadReadable reads the first cacheWarmHeadSize bytes of path through the
+// mount. It returns nil on success, on EOF (file smaller than the head window),
+// or on a transient error (timeout/cancellation); it returns the error only for
+// a definitive read failure (e.g. EIO from a missing segment / dead link).
+func (m *Manager) verifyHeadReadable(ctx context.Context, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+	if size == 0 {
+		return nil
+	}
+	head := int64(cacheWarmHeadSize)
+	if head > size {
+		head = size
+	}
+	if err := drainRange(ctx, f, 0, head); err != nil {
+		if isTransientReadErr(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// isTransientReadErr reports whether err is a momentary read failure (timeout or
+// cancellation) rather than a definitive content failure, so verification does
+// not fail a good import on a brief provider hiccup.
+func isTransientReadErr(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, syscall.ETIMEDOUT) ||
+		errors.Is(err, syscall.EINTR) ||
+		errors.Is(err, syscall.EAGAIN)
 }
 
 // warmOneFile reads the head and (for large enough files) the tail of path,

@@ -213,6 +213,19 @@ func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) erro
 		if len(probeFiles) > MaxNZBPreCacheFiles {
 			probeFiles = probeFiles[:MaxNZBPreCacheFiles]
 		}
+		// Pre-import verification: confirm the file head is actually readable
+		// through the mount before handing the symlink to the *arr. A missing
+		// usenet first segment or a dead/expired debrid link otherwise makes
+		// ffprobe read 0x00 and the *arr import-loop endlessly. Failing here
+		// marks the download failed so the *arr can grab an alternative.
+		if d.manager.config.VerifyImport {
+			if err := d.manager.VerifyMediaHeads(probeFiles); err != nil {
+				d.logger.Warn().Err(err).Str("entry", entry.Name).Msg("Pre-import verification failed; content unreadable, marking download failed")
+				_ = os.RemoveAll(torrentSymlinkPath)
+				d.markAsError(entry, fmt.Errorf("pre-import verification failed: %w", err))
+				return fmt.Errorf("pre-import verification failed for %s: %w", entry.Name, err)
+			}
+		}
 		d.logger.Debug().Int("files", len(probeFiles)).Msgf("Warming cache for %s", entry.Name)
 		if err := d.manager.WarmFileCache(probeFiles); err != nil {
 			d.logger.Error().Msgf("Failed to warm cache: %s", err)
